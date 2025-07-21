@@ -22,8 +22,11 @@ def analyze_bot_json(data):
     handlers = []
     variables = set()
     for flow in flows:
+        flow_name = flow['name']
         for page in flow['pages']:
-            pages.append(page)
+            # 기존: pages.append(page)
+            # 수정: Flow명 + Page명 조합으로 저장
+            pages.append((flow_name, page['name']))
             for handler in page.get('handlers', []):
                 handlers.append(handler)
                 for preset in handler.get('action', {}).get('parameterPresets', []):
