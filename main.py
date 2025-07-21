@@ -14,6 +14,10 @@ from collections import defaultdict
 import re
 from io import BytesIO
 import html  # html entity decoding
+from openai import OpenAI  # Add for v1 API
+from pydantic import BaseModel
+import time  # For timing debug
+from concurrent.futures import ThreadPoolExecutor, as_completed  # For parallel typo check
 
 # .env 파일의 환경변수 자동 로드
 load_dotenv()
@@ -600,6 +604,63 @@ def check_typo_openai_flow(flow_texts):
     except Exception as e:
         return f"오류: {e}"
 
+class TypoCheckResult(BaseModel):
+    text: str
+    typo: bool
+    reason: str = ""
+
+# 오타 검출(OpenAI) - Response별 JSON 결과 반환
+
+def check_typo_openai_responses_json(response_texts):
+    """
+    여러 Response Text를 받아 각각에 대해 오타 여부를 JSON으로 반환 (OpenAI + Pydantic)
+    [{text, typo, reason} ...]
+    무의미한 문자열(공백, 특수문자만, 매우 짧은 경우 등)은 OpenAI에 보내지 않고 바로 typo=True 처리
+    """
+    import re
+    api_key = os.getenv("OPENAI_API_KEY")
+    client = OpenAI(api_key=api_key)
+    class TypoCheckList(BaseModel):
+        results: list[TypoCheckResult]
+    prompt = (
+        "아래 여러 문장 각각에 대해 맞춤법/오타가 있으면 typo=true, 없으면 typo=false로, 이유(reason)와 함께 JSON 배열로 답해줘. "
+        "형식: {\"results\":[{\"text\":..., \"typo\":true/false, \"reason\":...}, ...]}\n"
+    )
+    # 무의미한 문자열 판별 함수
+    def is_meaningless(text):
+        if not text or not str(text).strip():
+            return True
+        # 한글 자음/모음만 반복 (예: ㅇㅍㅇㅇㅇ...)
+        if re.fullmatch(r'[ㄱ-ㅎㅏ-ㅣ]+', text.strip()):
+            return True
+        # 특수문자/공백만 (한글,영문,숫자, 완성형 한글 없으면)
+        if not re.search(r"[A-Za-z0-9가-힣]", text):
+            return True
+        # 너무 짧은 경우 (예: 2글자 이하)
+        if len(text.strip()) <= 2:
+            return True
+        return False
+    # 분리: 무의미/의미있는 텍스트
+    meaningless = [t for t in response_texts if is_meaningless(t)]
+    meaningful = [t for t in response_texts if not is_meaningless(t)]
+    results = []
+    # 무의미한 텍스트는 바로 typo=True 처리
+    for t in meaningless:
+        results.append(TypoCheckResult(text=t, typo=True, reason="무의미한 문자열(공백/특수문자/너무 짧음)"))
+    if meaningful:
+        joined = "\n".join(f"- {t}" for t in meaningful)
+        user_content = f"문장 목록:\n{joined}"
+        response = client.responses.parse(
+            model="gpt-4o-2024-08-06",
+            input=[
+                {"role": "system", "content": "너는 한국어 맞춤법 검사기야."},
+                {"role": "user", "content": prompt + user_content},
+            ],
+            text_format=TypoCheckList,
+        )
+        results.extend(response.output_parsed.results)
+    return results
+
 if menu == "대시보드" and data is not None:
     flows, pages, handlers, variables = analyze_bot_json(data)
     errors = validate_bot_json(data)
@@ -611,23 +672,33 @@ if menu == "대시보드" and data is not None:
         "🔎 인텐트/엔티티 요약"
     ])
 
+    # 정확한 Page 수 집계 (모든 Flow의 Page 조합)
+    def page_key(page_tuple):
+        if isinstance(page_tuple, tuple) and len(page_tuple) == 2:
+            flow, page = page_tuple
+            if isinstance(page, dict):
+                return (flow, page.get('name', str(page)))
+            return (flow, str(page))
+        return (None, str(page_tuple))
+    unique_pages = set(page_key(p) for p in pages)
+
     with tab1:
         st.markdown("<div class='tab-section-title'><span class='icon'>📄</span> Flow별 서비스 시나리오 요약</div>", unsafe_allow_html=True)
         flow_summaries = summarize_flow_service_natural(data)
-        flows = data['context']['flows']
-        for i, flow in enumerate(flows):
+        flows_data = data['context']['flows']
+        for i, flow in enumerate(flows_data):
             flow_name = flow['name']
-            pages = flow['pages']
+            pages_in_flow = flow['pages']
             # page간 이동 해석
             page_links = []
-            for page in pages:
+            for page in pages_in_flow:
                 for handler in page.get('handlers', []):
                     target = handler.get('transitionTarget', {})
                     if target.get('type') == 'CUSTOM' and target.get('page'):
                         page_links.append((page['name'], target['page']))
             # Graphviz 다이어그램 생성
             graph_lines = [f'digraph "{flow_name}" {{']
-            for page in pages:
+            for page in pages_in_flow:
                 graph_lines.append(f'    "{page["name"]}";')
             for src, dst in page_links:
                 graph_lines.append(f'    "{src}" -> "{dst}";')
@@ -706,7 +777,7 @@ if menu == "대시보드" and data is not None:
     # 카드형 요약
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Flow 수", len(flows))
-    col2.metric("Page 수", len(pages))
+    col2.metric("Page 수", len(unique_pages))  # 전체 Flow-Page 조합 기준
     col3.metric("핸들러 수", len(handlers))
     col4.metric("변수 수", len(variables))
 
@@ -949,26 +1020,42 @@ if menu == "JSON 구조 파악" and data is not None:
         )
 
 if menu == "Response Text 검출" and data is not None:
-    st.write("각 Flow/Page별 Response 텍스트(<p>...</p>)를 추출하여 표로 보여주고, Flow 단위로 오타를 OpenAI로 검사합니다.")
+    st.write("각 Flow/Page별 Response 텍스트(<p>...</p>)를 추출하여 표로 보여주고, 각 Response별 오타를 OpenAI로 검사합니다.")
     rows = extract_response_texts_by_flow(data)
-    # null/빈값 row 전체 제외 (혹시라도 남아있을 경우)
     rows = [row for row in rows if row.get('Response Text') not in [None, '', 'null']]
     if not rows:
         st.info("Response 텍스트가 없습니다.")
     else:
         import pandas as pd
         df = pd.DataFrame(rows)
-        # Flow별 그룹핑
-        flow_groups = df.groupby('Flow')
         typo_results = {}
-        if st.button("Response Text 오타 검수 실행(by OpenAI)"):
-            for flow, group in flow_groups:
+        if st.button("Response Text 오타 검수 실행(by OpenAI, JSON, 병렬)"):
+            flow_groups = list(df.groupby('Flow'))
+            total = len(flow_groups)
+            progress = st.progress(0, text="오타 분석 진행 중...")
+            start_time = time.time()
+            def typo_check_for_flow(flow, group):
                 texts = group['Response Text'].tolist()
-                result = check_typo_openai_flow(texts)
-                typo_results[flow] = result
-            st.success("Response Text 오타 검출이 완료되었습니다!")
+                return flow, check_typo_openai_responses_json(texts)
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [executor.submit(typo_check_for_flow, flow, group) for flow, group in flow_groups]
+                for idx, future in enumerate(as_completed(futures)):
+                    flow, results = future.result()
+                    for r in results:
+                        typo_results[(flow, r.text)] = (r.typo, r.reason)
+                    progress.progress((idx + 1) / total, text=f"오타 분석: {idx + 1}/{total} Flow 완료")
+            st.success(f"Response Text 오타 검출이 완료되었습니다! (총 소요: {time.time() - start_time:.1f}s)")
         # 표에 오타 결과 컬럼 추가
-        df['오타 검출 결과(Flow)'] = df['Flow'].map(lambda f: typo_results.get(f, '(검사 전)'))
+        def get_typo_result(row):
+            key = (row['Flow'], row['Response Text'])
+            if key in typo_results:
+                typo, reason = typo_results[key]
+                return f"오타 있음: {reason}" if typo else "오타 없음"
+            return '(검사 전)'
+        df['오타 검출 결과(Response별)'] = df.apply(get_typo_result, axis=1)
+        # Handler_ID 컬럼이 있으면 모두 문자열로 변환 (Arrow 오류 방지)
+        if 'Handler_ID' in df.columns:
+            df['Handler_ID'] = df['Handler_ID'].astype(str)
         st.dataframe(df, use_container_width=True)
         # 엑셀 다운로드 버튼
         def to_excel_bytes(df):
