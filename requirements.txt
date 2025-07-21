@@ -6,3 +6,4 @@ fpdf
 pyspellchecker
 python-dotenv
 xlsxwriter
+pydantic
