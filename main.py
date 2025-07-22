@@ -806,17 +806,15 @@ if menu == "대시보드" and data is not None:
     uploaded_filename = uploaded_file.name if uploaded_file else "uploaded"
     base_filename = os.path.splitext(uploaded_filename)[0]
 
-    # 엑셀 리포트 다운로드 버튼
+    # 엑셀 리포트 다운로드 버튼 (한 번에 다운로드)
     excel_filename = f"{base_filename}_bot_report.xlsx"
-    if st.button("엑셀 리포트 다운로드"):
-        excel_buffer = export_excel(errors, suggestions, filename=excel_filename)
-        st.download_button("엑셀 파일 다운로드", excel_buffer, file_name=excel_filename)
+    excel_buffer = export_excel(errors, suggestions, filename=excel_filename)
+    st.download_button("엑셀 리포트 다운로드", excel_buffer, file_name=excel_filename)
 
-    # PDF 리포트 다운로드 버튼
+    # PDF 리포트 다운로드 버튼 (한 번에 다운로드)
     pdf_filename = f"{base_filename}_bot_report.pdf"
-    if st.button("PDF 리포트 다운로드"):
-        pdf_buffer = export_pdf(errors, suggestions, filename=pdf_filename)
-        st.download_button("PDF 리포트 다운로드", pdf_buffer, file_name=pdf_filename)
+    pdf_buffer = export_pdf(errors, suggestions, filename=pdf_filename)
+    st.download_button("PDF 리포트 다운로드", pdf_buffer, file_name=pdf_filename)
 
 if menu == "QA 검수 결과" and data is not None:
     flows, pages, handlers, variables = analyze_bot_json(data)
@@ -903,6 +901,16 @@ if menu == "QA 검수 결과" and data is not None:
     .ConditionError { background: #ffb300; color: #222; }
     .CustomCheck { background: #6c47ff; }
     .PageLinkError { background: #00b894; }
+    .ConditionWarning {
+        background: #ffe066;
+        color: #222;
+        border: 2px solid #ffd700;
+    }
+    .IntentError {
+        background: #2196f3;
+        color: #fff;
+        border: 2px solid #1565c0;
+    }
     .error-suggestion {
         flex: 2 1 0;
         color: #2d5fff;
@@ -928,6 +936,24 @@ if menu == "QA 검수 결과" and data is not None:
         flow = err['location'].split('>')[0].strip() if '>' in err['location'] else err['location']
         flow_errors[flow].append((i, err))
 
+    # 오류 유형별 아이콘 및 한글명 매핑
+    def error_type_display(err_type):
+        mapping = {
+            'HandlerMissing':    ('🔴', '핸들러 없음'),
+            'PageLinkError':     ('🟢', '잘못된 페이지 이동'),
+            'ConditionError':    ('🟡', '조건문 오류'),
+            'ConditionWarning':  ('⚠️', '조건문 경고'),
+            'IntentError':       ('🟦', 'Intent 오류'),
+            'EventWarning':      ('🟧', '이벤트 경고'),
+            'CustomCheck':       ('🟣', '사용자 정의 검수'),
+        }
+        return mapping.get(err_type, ('❓', err_type))
+
+    # 오류 유형 표기 일관성: summary_df, 상세 카드 모두 적용
+    def get_error_type_display(row):
+        emoji, kor_name = error_type_display(row['오류 유형'] if '오류 유형' in row else row['type'])
+        return f"{emoji} {kor_name}"
+
     for flow, err_list in flow_errors.items():
         st.markdown(f"<div class='flow-section'>", unsafe_allow_html=True)
         st.markdown(f"<div class='flow-title'>📁 Flow: {flow}</div>", unsafe_allow_html=True)
@@ -940,19 +966,25 @@ if menu == "QA 검수 결과" and data is not None:
             </div>
         """, unsafe_allow_html=True)
         for i, err in err_list:
-            emoji = {
-                "HandlerMissing": "🔴",
-                "ConditionError": "🟡",
-                "PageLinkError": "🟢",
-                "CustomCheck": "🟣"
-            }.get(err['type'], "⚠️")
+            emoji, kor_name = error_type_display(err['type'])
             badge_class = f"error-type-badge {err['type']}"
             page_name = err['location'].split('>')[1].strip() if '>' in err['location'] else err['location']
+            # 오류유형 표기 일관성
+            error_type_label = f"{emoji} {kor_name}"
+            suggestion = err['suggestion']
+            if err['type'] == 'ConditionWarning' and 'missing_vars' in err and err['missing_vars']:
+                suggestion = f"{suggestion}"
+            # ConditionError: 핵심 안내만 남김
+            if err['type'] == 'ConditionError' and 'used_condition' in err:
+                suggestion = err['suggestion']
+            # IntentError: 핵심 안내만 남김
+            if err['type'] == 'IntentError' and 'used_intent' in err:
+                suggestion = err['suggestion']
             st.markdown(f"""
                 <div class='page-error-row'>
                     <span class='page-name'>{page_name}</span>
-                    <span class='{badge_class}'>{emoji} {err['type']}</span>
-                    <span class='error-suggestion'>{err['suggestion'] or ''}</span>
+                    <span class='{badge_class}'>{error_type_label}</span>
+                    <span class='error-suggestion'>{suggestion}</span>
                 </div>
             """, unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -961,14 +993,32 @@ if menu == "QA 검수 결과" and data is not None:
     summary_rows = []
     for err, sug in zip(errors, suggestions):
         page = err['location']
+        emoji, kor_name = error_type_display(err['type'])
+        error_type_label = f"{emoji} {kor_name}"
+        suggestion = err['suggestion'] or sug
+        if err['type'] == 'ConditionWarning' and 'missing_vars' in err and err['missing_vars']:
+            suggestion = f"{suggestion}"
+        if err['type'] == 'ConditionError' and 'used_condition' in err:
+            suggestion = err['suggestion']
+        if err['type'] == 'IntentError' and 'used_intent' in err:
+            suggestion = err['suggestion']
         summary_rows.append({
             "Page": page,
-            "오류 유형": err['type'],
+            "오류 유형": error_type_label,
             "오류 메시지": err['message'],
-            "수정 제안": err['suggestion'] or sug
+            "수정 제안": suggestion
         })
     import pandas as pd
     summary_df = pd.DataFrame(summary_rows)
+    # Handler_ID 컬럼이 있으면 문자열로 변환 (pyarrow 오류 방지)
+    if 'Handler_ID' in summary_df.columns:
+        summary_df['Handler_ID'] = summary_df['Handler_ID'].astype(str)
+    # 'AI 제안:'으로 시작하면 '(AI제안)'으로 대체하여 표시
+    def format_ai_suggestion(val):
+        if isinstance(val, str) and val.strip().startswith('AI 제안:'):
+            return '(AI제안) ' + val.strip()[6:].lstrip()
+        return val
+    summary_df['수정 제안'] = summary_df['수정 제안'].apply(format_ai_suggestion)
     st.markdown("<div class='tab-section-title'><span class='icon'>📋</span> 자동 수정 제안 요약 (Page별)</div>", unsafe_allow_html=True)
     st.dataframe(summary_df, use_container_width=True)
     # 엑셀 다운로드 버튼 추가
@@ -980,7 +1030,6 @@ if menu == "QA 검수 결과" and data is not None:
         output.seek(0)
         return output
     excel_bytes_summary = to_excel_bytes_summary(summary_df)
-    # 업로드 파일명에서 확장자 제거
     uploaded_filename = uploaded_file.name if uploaded_file else "uploaded"
     base_filename = os.path.splitext(uploaded_filename)[0]
     summary_excel_filename = f"{base_filename}_summary.xlsx"
@@ -998,6 +1047,9 @@ if menu == "JSON 구조 파악" and data is not None:
         st.markdown(f"### 🗂️ Flow: {flow_name}")
         flow_part = flow_df[flow_df["Flow"] == flow_name].copy()
         show_cols = ["Page", "Handler_ID", "Handler_Type", "Handler_Condition", "Handler_Action", "Handler_TransitionTarget", "Page_Action", "Page_Parameters", "Handler_ParameterPresets"]
+        # Handler_ID 컬럼이 있으면 문자열로 변환
+        if 'Handler_ID' in flow_part.columns:
+            flow_part['Handler_ID'] = flow_part['Handler_ID'].astype(str)
         st.dataframe(flow_part[show_cols].reset_index(drop=True), use_container_width=True)
     st.subheader("Intent 정보")
     st.dataframe(intent_df, use_container_width=True)
