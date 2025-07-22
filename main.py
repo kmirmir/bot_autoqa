@@ -41,7 +41,7 @@ st.markdown("""
 if 'shared_json_data' not in st.session_state:
     st.session_state['shared_json_data'] = None
 
-uploaded_file = st.file_uploader("JSON 파일 업로드", type=["json"], key="main_json")
+uploaded_file = st.file_uploader("QA 검수할 봇 JSON 파일 업로드", type=["json"], key="main_json")
 if uploaded_file is not None:
     try:
         st.session_state['shared_json_data'] = json.load(uploaded_file)
