@@ -85,8 +85,9 @@ def export_pdf(errors, suggestions, filename="bot_report.pdf"):
         if err['suggestion']:
             pdf.multi_cell(0, 10, f"수정 제안: {err['suggestion']}")
         pdf.ln(5)
-    output = io.BytesIO()
-    pdf.output(output)
+    # FPDF의 output(dest='S')로 PDF 바이트를 얻어 BytesIO에 저장
+    pdf_bytes = pdf.output(dest='S').encode('latin1')
+    output = io.BytesIO(pdf_bytes)
     output.seek(0)
     return output
 
@@ -102,6 +103,18 @@ def validate_bot_json(data, custom_checks=None):
     errors = []
     flows = data['context']['flows']
     page_names = set()
+    # --- INTENT/ENTITY/이벤트/연산자/함수/예약어 목록 추출 ---
+    all_intents = set()
+    for intent in data['context'].get('openIntents', []) + data['context'].get('userIntents', []):
+        if intent.get('name'):
+            all_intents.add(intent['name'])
+    allowed_operators = set(['/','*','+','-','==','!=','>=','<=','>','<','EXISTS','NOT EXISTS','IN','NOT','AND','OR'])
+    allowed_functions = set(['sum','getNumber','isValidDatetime','getLength','convertDateFormat','addDays','isBefore','trim','replaceAll','mergeStrings','toUpper','toLower'])
+    reserved_words = set(['True','{$USER_TEXT_INPUT}','{$__NLU_INTENT__}', '{$NLU_INTENT}','SLOT_FILLING_COMPLETED','ASKING_SLOT'])
+    allowed_event_types = set([
+        'NO_MATCH_EVENT','PAUSE_EVENT','WAKE_EVENT','WEBHOOK_FAILED_EVENT','USER_DIALOG_START','USER_DIALOG_END',
+        'USER_DIALOG_WAIT_TIMEOUT','USER_BUTTON_CLICK','USER_FILE_UPLOAD_SUCCESS','USER_FILE_UPLOAD_FAIL','USER_TRANSFER_AGENT','BOT_TRANSITION_NOT_ALLOWED'
+    ])
     for flow in flows:
         for page in flow['pages']:
             page_names.add(page['name'])
@@ -127,16 +140,90 @@ def validate_bot_json(data, custom_checks=None):
                     'location': f"{flow['name']} > {page['name']}",
                     'suggestion': "필수 이벤트 핸들러를 추가하세요."
                 })
-            # 조건문 오류
+            # 핸들러별 상세 검수
             for handler in page.get('handlers', []):
-                cond = handler.get('conditionStatement')
-                if cond is not None and cond.strip() in ["", "True", "False"]:
-                    errors.append({
-                        'type': 'ConditionError',
-                        'message': f"비어있거나 의미 없는 조건문: '{cond}'",
-                        'location': f"{flow['name']} > {page['name']}",
-                        'suggestion': "실제 조건을 입력하거나, 불필요하다면 조건문을 제거하세요."
-                    })
+                handler_type = handler.get('type','')
+                cond = handler.get('conditionStatement','')
+                # --- INTENT handler 검수 ---
+                if handler_type == 'INTENT':
+                    intent_name = handler.get('intentTrigger',{}).get('name')
+                    if intent_name and intent_name not in all_intents:
+                        errors.append({
+                            'type': 'IntentError',
+                            'message': f"등록되지 않은 Intent명 사용: {intent_name}",
+                            'location': f"{flow['name']} > {page['name']}",
+                            'suggestion': f"{intent_name}는 등록된 Intent명이 아닙니다.",
+                            'used_intent': intent_name
+                        })
+                # --- CONDITION handler 검수 ---
+                if handler_type == 'CONDITION':
+                    # True 대소문자 구분
+                    if cond.strip() and cond.strip() not in reserved_words:
+                        if cond.strip() == 'true' or cond.strip() == 'TRUE' or cond.strip() == 'True ':
+                            errors.append({
+                                'type': 'ConditionError',
+                                'message': f"조건문 True는 반드시 대소문자 구분하여 'True'로 입력해야 합니다. 현재: '{cond}'",
+                                'location': f"{flow['name']} > {page['name']}",
+                                'suggestion': f"조건문 '{cond}'를 'True'로 수정하세요.",
+                                'used_condition': cond
+                            })
+                    # 파라미터 참조 형식 및 parameterPresets, intents, entities와 비교
+                    import re
+                    param_refs = re.findall(r'\{\$([a-zA-Z0-9_]+)\}', cond)
+                    preset_names = set(p['name'] for p in handler.get('parameterPresets', []))
+                    # intent/entity name 목록 추출
+                    all_intents_list = list(all_intents)
+                    all_entities = set()
+                    for entity in data['context'].get('customEntities', []):
+                        if entity.get('name'):
+                            all_entities.add(entity['name'])
+                    missing_vars = []
+                    for ref in param_refs:
+                        # '__NLU_INTENT__' 또는 'NLU_INTENT'는 제외
+                        if ref in ('__NLU_INTENT__', 'NLU_INTENT'):
+                            continue
+                        if ref not in preset_names and ref not in all_intents and ref not in all_entities:
+                            missing_vars.append(ref)
+                    if missing_vars:
+                        errors.append({
+                            'type': 'ConditionWarning',
+                            'message': f"조건문에서 참조한 파라미터명(들) {', '.join(missing_vars)}이(가) parameterPresets, Intent, Entity에 없습니다.",
+                            'location': f"{flow['name']} > {page['name']}",
+                            'suggestion': f"{', '.join(missing_vars)} 변수가 등록되어 있지 않습니다.",
+                            'missing_vars': missing_vars
+                        })
+                    # 연산자 체크
+                    ops = re.findall(r'(==|!=|>=|<=|>|<|EXISTS|NOT EXISTS|IN|NOT|AND|OR|\+|\-|\*|/)', cond)
+                    for op in ops:
+                        if op not in allowed_operators:
+                            errors.append({
+                                'type': 'ConditionError',
+                                'message': f"허용되지 않은 연산자 사용: {op}",
+                                'location': f"{flow['name']} > {page['name']}",
+                                'suggestion': f"조건문에서 허용되지 않은 연산자 '{op}'를 사용했습니다. 조건문: '{cond}'",
+                                'used_condition': cond
+                            })
+                    # 함수 체크
+                    funcs = re.findall(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*\(', cond)
+                    for func in funcs:
+                        if func not in allowed_functions and func not in reserved_words:
+                            errors.append({
+                                'type': 'ConditionError',
+                                'message': f"허용되지 않은 함수 사용: {func}",
+                                'location': f"{flow['name']} > {page['name']}",
+                                'suggestion': f"조건문에서 허용되지 않은 함수 '{func}'를 사용했습니다. 조건문: '{cond}'",
+                                'used_condition': cond
+                            })
+                # --- EVENT handler 검수 ---
+                if handler_type == 'EVENT':
+                    event_type = handler.get('eventTrigger',{}).get('type')
+                    if event_type and event_type not in allowed_event_types:
+                        errors.append({
+                            'type': 'EventWarning',
+                            'message': f"허용되지 않은 이벤트 타입: {event_type}",
+                            'location': f"{flow['name']} > {page['name']}",
+                            'suggestion': f"허용 이벤트 타입만 사용하세요: {', '.join(allowed_event_types)}"
+                        })
     # 커스텀 검수 항목
     if custom_checks:
         for check in custom_checks:
@@ -151,12 +238,16 @@ def validate_bot_json(data, custom_checks=None):
 def suggest_fixes(errors, data, use_openai=False):
     suggestions = []
     for err in errors:
-        if use_openai and err['type'] in ['ConditionError', 'PageLinkError']:
+        # IntentError도 AI 제안 적용
+        if use_openai and err['type'] in ['ConditionError', 'PageLinkError', 'IntentError']:
             # 오류 맥락과 프롬프트 생성
             context = f"오류 설명: {err['message']}\n위치: {err['location']}"
             prompt = "이 오류를 어떻게 고치면 좋을지 제안해줘."
             ai_suggestion = openai_suggest_fix(context, prompt)
-            suggestions.append(f"AI 제안: {ai_suggestion}")
+            # AI 제안 접두어 보장
+            if not ai_suggestion.strip().startswith("AI 제안:"):
+                ai_suggestion = f"AI 제안: {ai_suggestion}"
+            suggestions.append(ai_suggestion)
         elif err['type'] == 'PageLinkError':
             suggestions.append(f"{err['location']}에서 '{err['message']}' 오류가 있습니다. '{err['suggestion']}'")
         elif err['type'] == 'HandlerMissing':
