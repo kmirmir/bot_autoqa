@@ -514,6 +514,8 @@ def extract_response_texts_by_flow(data):
                             clean_p = p.strip()
                             # <br> 및 <br/> 태그 제거
                             clean_p = re.sub(r'<br\s*/?>', '', clean_p, flags=re.IGNORECASE)
+                            # <span ...> 등 모든 HTML 태그 제거
+                            clean_p = re.sub(r'<[^>]+>', '', clean_p)
                             if clean_p:  # null/빈값 제외
                                 clean_p = html.unescape(clean_p)  # HTML entity decode
                                 rows.append({
@@ -563,6 +565,8 @@ def extract_response_texts_by_flow(data):
                                 clean_p = p.strip()
                                 # <br> 및 <br/> 태그 제거
                                 clean_p = re.sub(r'<br\s*/?>', '', clean_p, flags=re.IGNORECASE)
+                                # <span ...> 등 모든 HTML 태그 제거
+                                clean_p = re.sub(r'<[^>]+>', '', clean_p)
                                 if clean_p:  # null/빈값 제외
                                     clean_p = html.unescape(clean_p)  # HTML entity decode
                                     rows.append({
@@ -1018,7 +1022,8 @@ if menu == "QA 검수 결과" and data is not None:
         if isinstance(val, str) and val.strip().startswith('AI 제안:'):
             return '(AI제안) ' + val.strip()[6:].lstrip()
         return val
-    summary_df['수정 제안'] = summary_df['수정 제안'].apply(format_ai_suggestion)
+    if '수정 제안' in summary_df.columns:
+        summary_df['수정 제안'] = summary_df['수정 제안'].apply(format_ai_suggestion)
     st.markdown("<div class='tab-section-title'><span class='icon'>📋</span> 자동 수정 제안 요약 (Page별)</div>", unsafe_allow_html=True)
     st.dataframe(summary_df, use_container_width=True)
     # 엑셀 다운로드 버튼 추가
