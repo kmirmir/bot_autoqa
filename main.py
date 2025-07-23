@@ -1022,7 +1022,7 @@ if menu == "QA 검수 결과" and data is not None:
         if isinstance(val, str) and val.strip().startswith('AI 제안:'):
             return '(AI제안) ' + val.strip()[6:].lstrip()
         return val
-    if '수정 제안' in summary_df.columns:
+    if not summary_df.empty and '수정 제안' in summary_df.columns:
         summary_df['수정 제안'] = summary_df['수정 제안'].apply(format_ai_suggestion)
     st.markdown("<div class='tab-section-title'><span class='icon'>📋</span> 자동 수정 제안 요약 (Page별)</div>", unsafe_allow_html=True)
     st.dataframe(summary_df, use_container_width=True)
