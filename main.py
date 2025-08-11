@@ -250,6 +250,55 @@ def get_intent_entity_summary(data):
         entity_errors.append({'오류': f'미사용 Entity: {", ".join(unused_entities)}'})
     return pd.DataFrame(intents), pd.DataFrame(entities), pd.DataFrame(intent_errors), pd.DataFrame(entity_errors)
 
+def check_intent_duplicates(data):
+    """
+    인텐트 중복 사용 현황을 자세히 분석하여 반환
+    """
+    intent_usage = {}
+    intent_locations = {}
+    
+    # 모든 인텐트 초기화
+    for intent in data['context'].get('openIntents', []) + data['context'].get('userIntents', []):
+        name = intent.get('name')
+        if name:
+            intent_usage[name] = 0
+            intent_locations[name] = []
+    
+    # 플로우에서 인텐트 사용 현황 추적
+    for flow in data['context'].get('flows', []):
+        flow_name = flow.get('name')
+        for page in flow.get('pages', []):
+            page_name = page.get('name')
+            for handler in page.get('handlers', []):
+                # intentTrigger에서 사용
+                if 'intentTrigger' in handler:
+                    intent_name = handler['intentTrigger'].get('name')
+                    if intent_name:
+                        intent_usage[intent_name] = intent_usage.get(intent_name, 0) + 1
+                        intent_locations[intent_name].append(f"{flow_name} > {page_name}")
+                
+                # conditionStatement에서 사용
+                cond = handler.get('conditionStatement', '')
+                for intent_name in intent_usage.keys():
+                    if intent_name and intent_name in str(cond):
+                        intent_usage[intent_name] = intent_usage.get(intent_name, 0) + 1
+                        intent_locations[intent_name].append(f"{flow_name} > {page_name}")
+    
+    # 중복 사용된 인텐트 필터링
+    duplicate_intents = {name: count for name, count in intent_usage.items() if count > 1}
+    
+    # 결과 데이터프레임 생성
+    duplicate_rows = []
+    for intent_name, count in duplicate_intents.items():
+        locations = intent_locations[intent_name]
+        duplicate_rows.append({
+            'Intent명': intent_name,
+            '사용 횟수': count,
+            '사용 위치': ' | '.join(locations)
+        })
+    
+    return pd.DataFrame(duplicate_rows)
+
 # 탭 스타일 커스텀 CSS 추가
 st.markdown('''
     <style>
@@ -417,6 +466,7 @@ def parse_bot_structure_from_data(data):
 def extract_responses(data):
     """
     각 Flow/Page별로 Response 텍스트를 추출하여 리스트로 반환
+    챗봇: <p>...</p> 태그, 콜봇: promptGroup.prompts 배열
     [{Flow, Page, Response Text, ...}]
     """
     rows = []
@@ -433,12 +483,17 @@ def extract_responses(data):
                 if 'action' in handler and 'responses' in handler['action']:
                     responses.extend(handler['action']['responses'])
             for resp in responses:
-                # response는 dict, text는 resp['record']['text'] 또는 resp['text']
+                # response는 dict, text는 resp['record']['text'] 또는 resp['text'] 또는 resp['promptGroup']['prompts']
                 text = None
                 if 'record' in resp and resp['record'] and 'text' in resp['record']:
                     text = resp['record']['text']
                 elif 'text' in resp:
                     text = resp['text']
+                elif 'promptGroup' in resp and resp['promptGroup'] and 'prompts' in resp['promptGroup']:
+                    # 콜봇: promptGroup.prompts 배열에서 텍스트 추출
+                    prompts = resp['promptGroup']['prompts']
+                    if isinstance(prompts, list) and prompts:
+                        text = ' '.join([str(p) for p in prompts if p])
                 if text:
                     rows.append({
                         'Flow': flow_name,
@@ -472,7 +527,8 @@ def check_typo_openai(text):
 
 def extract_response_texts_by_flow(data):
     """
-    각 Flow/Page별로 action.responses의 <p>...</p> 텍스트만 추출하여 반환
+    각 Flow/Page별로 action.responses의 텍스트를 추출하여 반환
+    챗봇: <p>...</p> 태그, 콜봇: promptGroup.prompts 배열
     [{Flow, Page, 위치, Handler Type, Condition, Response Type, TemplateId, Response Text}]
     """
     rows = []
@@ -484,13 +540,20 @@ def extract_response_texts_by_flow(data):
             if 'action' in page and 'responses' in page['action']:
                 for resp in page['action']['responses']:
                     text_candidates = []
-                    # 1. record.text
+                    # 1. record.text (챗봇)
                     if 'record' in resp and resp['record'] and 'text' in resp['record']:
                         text_candidates.append(resp['record']['text'])
-                    # 2. text
+                    # 2. text (챗봇)
                     if 'text' in resp:
                         text_candidates.append(resp['text'])
-                    # 3. MESSAGE 타입의 customPayload.content.item 내부 section/item/text.text
+                    # 3. promptGroup.prompts (콜봇)
+                    if 'promptGroup' in resp and resp['promptGroup'] and 'prompts' in resp['promptGroup']:
+                        prompts = resp['promptGroup']['prompts']
+                        if isinstance(prompts, list):
+                            for prompt in prompts:
+                                if prompt and isinstance(prompt, str):
+                                    text_candidates.append(prompt)
+                    # 4. MESSAGE 타입의 customPayload.content.item 내부 section/item/text.text (챗봇)
                     template_id = None
                     if resp.get('type') == 'MESSAGE':
                         custom_payload = resp.get('customPayload', {})
@@ -506,18 +569,36 @@ def extract_response_texts_by_flow(data):
                                         t = section_item['text'].get('text')
                                         if t:
                                             text_candidates.append(t)
+                    
                     for text in text_candidates:
                         if not text:
                             continue
-                        p_texts = re.findall(r'<p>(.*?)</p>', text, re.DOTALL)
-                        for p in p_texts:
-                            clean_p = p.strip()
-                            # <br> 및 <br/> 태그 제거
-                            clean_p = re.sub(r'<br\s*/?>', '', clean_p, flags=re.IGNORECASE)
-                            # <span ...> 등 모든 HTML 태그 제거
-                            clean_p = re.sub(r'<[^>]+>', '', clean_p)
-                            if clean_p:  # null/빈값 제외
-                                clean_p = html.unescape(clean_p)  # HTML entity decode
+                        # 챗봇: <p> 태그에서 텍스트 추출
+                        if '<p>' in text:
+                            p_texts = re.findall(r'<p>(.*?)</p>', text, re.DOTALL)
+                            for p in p_texts:
+                                clean_p = p.strip()
+                                # <br> 및 <br/> 태그 제거
+                                clean_p = re.sub(r'<br\s*/?>', '', clean_p, flags=re.IGNORECASE)
+                                # <span ...> 등 모든 HTML 태그 제거
+                                clean_p = re.sub(r'<[^>]+>', '', clean_p)
+                                if clean_p:  # null/빈값 제외
+                                    clean_p = html.unescape(clean_p)  # HTML entity decode
+                                    rows.append({
+                                        'Flow': flow_name,
+                                        'Page': page_name,
+                                        '위치': 'Page',
+                                        'Handler Type': '',
+                                        'Condition': '',
+                                        'Response Type': resp.get('type', ''),
+                                        'TemplateId': template_id,
+                                        'Response Text': clean_p
+                                    })
+                        else:
+                            # 콜봇: promptGroup.prompts에서 직접 텍스트 사용
+                            clean_text = text.strip()
+                            if clean_text:  # null/빈값 제외
+                                clean_text = html.unescape(clean_text)  # HTML entity decode
                                 rows.append({
                                     'Flow': flow_name,
                                     'Page': page_name,
@@ -526,8 +607,9 @@ def extract_response_texts_by_flow(data):
                                     'Condition': '',
                                     'Response Type': resp.get('type', ''),
                                     'TemplateId': template_id,
-                                    'Response Text': clean_p
+                                    'Response Text': clean_text
                                 })
+            
             # Handler-level action.responses
             for handler in page.get('handlers', []):
                 handler_type = handler.get('type', '')
@@ -535,13 +617,20 @@ def extract_response_texts_by_flow(data):
                 if 'action' in handler and 'responses' in handler['action']:
                     for resp in handler['action']['responses']:
                         text_candidates = []
-                        # 1. record.text
+                        # 1. record.text (챗봇)
                         if 'record' in resp and resp['record'] and 'text' in resp['record']:
                             text_candidates.append(resp['record']['text'])
-                        # 2. text
+                        # 2. text (챗봇)
                         if 'text' in resp:
                             text_candidates.append(resp['text'])
-                        # 3. MESSAGE 타입의 customPayload.content.item 내부 section/item/text.text
+                        # 3. promptGroup.prompts (콜봇)
+                        if 'promptGroup' in resp and resp['promptGroup'] and 'prompts' in resp['promptGroup']:
+                            prompts = resp['promptGroup']['prompts']
+                            if isinstance(prompts, list):
+                                for prompt in prompts:
+                                    if prompt and isinstance(prompt, str):
+                                        text_candidates.append(prompt)
+                        # 4. MESSAGE 타입의 customPayload.content.item 내부 section/item/text.text (챗봇)
                         template_id = None
                         if resp.get('type') == 'MESSAGE':
                             custom_payload = resp.get('customPayload', {})
@@ -557,18 +646,36 @@ def extract_response_texts_by_flow(data):
                                             t = section_item['text'].get('text')
                                             if t:
                                                 text_candidates.append(t)
+                        
                         for text in text_candidates:
                             if not text:
                                 continue
-                            p_texts = re.findall(r'<p>(.*?)</p>', text, re.DOTALL)
-                            for p in p_texts:
-                                clean_p = p.strip()
-                                # <br> 및 <br/> 태그 제거
-                                clean_p = re.sub(r'<br\s*/?>', '', clean_p, flags=re.IGNORECASE)
-                                # <span ...> 등 모든 HTML 태그 제거
-                                clean_p = re.sub(r'<[^>]+>', '', clean_p)
-                                if clean_p:  # null/빈값 제외
-                                    clean_p = html.unescape(clean_p)  # HTML entity decode
+                            # 챗봇: <p> 태그에서 텍스트 추출
+                            if '<p>' in text:
+                                p_texts = re.findall(r'<p>(.*?)</p>', text, re.DOTALL)
+                                for p in p_texts:
+                                    clean_p = p.strip()
+                                    # <br> 및 <br/> 태그 제거
+                                    clean_p = re.sub(r'<br\s*/?>', '', clean_p, flags=re.IGNORECASE)
+                                    # <span ...> 등 모든 HTML 태그 제거
+                                    clean_p = re.sub(r'<[^>]+>', '', clean_p)
+                                    if clean_p:  # null/빈값 제외
+                                        clean_p = html.unescape(clean_p)  # HTML entity decode
+                                        rows.append({
+                                            'Flow': flow_name,
+                                            'Page': page_name,
+                                            '위치': 'Handler',
+                                            'Handler Type': handler_type,
+                                            'Condition': cond,
+                                            'Response Type': resp.get('type', ''),
+                                            'TemplateId': template_id,
+                                            'Response Text': clean_p
+                                        })
+                            else:
+                                # 콜봇: promptGroup.prompts에서 직접 텍스트 사용
+                                clean_text = text.strip()
+                                if clean_text:  # null/빈값 제외
+                                    clean_text = html.unescape(clean_text)  # HTML entity decode
                                     rows.append({
                                         'Flow': flow_name,
                                         'Page': page_name,
@@ -577,7 +684,7 @@ def extract_response_texts_by_flow(data):
                                         'Condition': cond,
                                         'Response Type': resp.get('type', ''),
                                         'TemplateId': template_id,
-                                        'Response Text': clean_p
+                                        'Response Text': clean_text
                                     })
     # null/빈값 row 전체 제외 (혹시라도 남아있을 경우)
     rows = [row for row in rows if row.get('Response Text') not in [None, '', 'null']]
@@ -614,6 +721,17 @@ class TypoCheckResult(BaseModel):
     reason: str = ""
 
 # 오타 검출(OpenAI) - Response별 JSON 결과 반환
+
+def normalize_text(text):
+    """
+    텍스트를 정규화하여 매칭에 사용
+    공백, 줄바꿈 제거, 소문자 변환
+    """
+    if not text:
+        return ""
+    # 공백과 줄바꿈 제거, 소문자 변환
+    normalized = re.sub(r'\s+', ' ', str(text).strip()).lower()
+    return normalized
 
 def check_typo_openai_responses_json(response_texts):
     """
@@ -748,6 +866,16 @@ if menu == "대시보드" and data is not None:
             st.dataframe(intent_df, use_container_width=True)
         else:
             st.info("등록된 Intent가 없습니다.")
+        
+        # 인텐트 중복 사용 현황 추가
+        st.markdown("**[인텐트 중복 사용 현황]**")
+        duplicate_intents_df = check_intent_duplicates(data)
+        if not duplicate_intents_df.empty:
+            st.warning(f"⚠️ 중복 사용된 인텐트가 {len(duplicate_intents_df)}개 있습니다!")
+            st.dataframe(duplicate_intents_df, use_container_width=True)
+        else:
+            st.success("✅ 중복 사용된 인텐트가 없습니다.")
+        
         st.markdown(f"**[Entity 요약 (총 {len(entity_df)}개)]**")
         if not entity_df.empty:
             st.dataframe(entity_df, use_container_width=True)
@@ -915,6 +1043,11 @@ if menu == "QA 검수 결과" and data is not None:
         color: #fff;
         border: 2px solid #1565c0;
     }
+    .EventWarning {
+        background: #ff9800;
+        color: #fff;
+        border: 2px solid #f57c00;
+    }
     .error-suggestion {
         flex: 2 1 0;
         color: #2d5fff;
@@ -1077,7 +1210,13 @@ if menu == "JSON 구조 파악" and data is not None:
         )
 
 if menu == "Response Text 검출" and data is not None:
-    st.write("각 Flow/Page별 Response 텍스트(<p>...</p>)를 추출하여 표로 보여주고, 각 Response별 오타를 OpenAI로 검사합니다.")
+    st.write("각 Flow/Page별 Response 텍스트를 추출하여 표로 보여주고, 각 Response별 오타를 OpenAI로 검사합니다.")
+    st.write("**지원 형식:** 챗봇(<p>...</p> 태그), 콜봇(promptGroup.prompts 배열)")
+    
+    # 디버깅 옵션 추가
+    debug_mode = st.checkbox("디버깅 모드 (매칭 실패 시 상세 정보 표시)", value=False)
+    st.session_state['debug_typo_matching'] = debug_mode
+    
     rows = extract_response_texts_by_flow(data)
     rows = [row for row in rows if row.get('Response Text') not in [None, '', 'null']]
     if not rows:
@@ -1091,23 +1230,51 @@ if menu == "Response Text 검출" and data is not None:
             total = len(flow_groups)
             progress = st.progress(0, text="오타 분석 진행 중...")
             start_time = time.time()
+            
             def typo_check_for_flow(flow, group):
                 texts = group['Response Text'].tolist()
                 return flow, check_typo_openai_responses_json(texts)
+            
             with ThreadPoolExecutor(max_workers=5) as executor:
                 futures = [executor.submit(typo_check_for_flow, flow, group) for flow, group in flow_groups]
                 for idx, future in enumerate(as_completed(futures)):
                     flow, results = future.result()
                     for r in results:
-                        typo_results[(flow, r.text)] = (r.typo, r.reason)
+                        # 정규화된 텍스트로 키 생성
+                        normalized_text = normalize_text(r.text)
+                        typo_results[(flow, normalized_text)] = (r.typo, r.reason)
                     progress.progress((idx + 1) / total, text=f"오타 분석: {idx + 1}/{total} Flow 완료")
             st.success(f"Response Text 오타 검출이 완료되었습니다! (총 소요: {time.time() - start_time:.1f}s)")
+        
         # 표에 오타 결과 컬럼 추가
         def get_typo_result(row):
-            key = (row['Flow'], row['Response Text'])
+            # 정규화된 텍스트로 키 검색
+            normalized_text = normalize_text(row['Response Text'])
+            key = (row['Flow'], normalized_text)
+            
             if key in typo_results:
                 typo, reason = typo_results[key]
                 return f"오타 있음: {reason}" if typo else "오타 없음"
+            
+            # 정규화된 키로 찾지 못한 경우, 원본 텍스트로도 시도
+            original_key = (row['Flow'], row['Response Text'])
+            if original_key in typo_results:
+                typo, reason = typo_results[original_key]
+                return f"오타 있음: {reason}" if typo else "오타 없음"
+            
+            # 여전히 못 찾은 경우, 부분 매칭 시도
+            for (stored_flow, stored_text), (typo, reason) in typo_results.items():
+                if stored_flow == row['Flow']:
+                    # 텍스트가 부분적으로 일치하는지 확인
+                    if (normalize_text(stored_text) in normalize_text(row['Response Text']) or 
+                        normalize_text(row['Response Text']) in normalize_text(stored_text)):
+                        return f"오타 있음: {reason}" if typo else "오타 없음"
+            
+            # 디버깅: 매칭 실패한 경우 정보 출력
+            if st.session_state.get('debug_typo_matching', False):
+                st.warning(f"매칭 실패: Flow={row['Flow']}, Text='{row['Response Text'][:50]}...'")
+                st.write(f"사용 가능한 키들: {list(typo_results.keys())[:5]}")
+            
             return '(검사 전)'
         df['오타 검출 결과(Response별)'] = df.apply(get_typo_result, axis=1)
         # Handler_ID 컬럼이 있으면 모두 문자열로 변환 (Arrow 오류 방지)
