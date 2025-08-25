@@ -257,12 +257,38 @@ def check_intent_duplicates(data):
     intent_usage = {}
     intent_locations = {}
     
-    # 모든 인텐트 초기화
+    # 먼저 플로우에서 실제로 사용되는 모든 인텐트를 수집
+    used_intents = set()
+    for flow in data['context'].get('flows', []):
+        for page in flow.get('pages', []):
+            for handler in page.get('handlers', []):
+                # intentTrigger에서 사용
+                if 'intentTrigger' in handler:
+                    intent_name = handler['intentTrigger'].get('name')
+                    if intent_name:
+                        used_intents.add(intent_name)
+                
+                # conditionStatement에서 사용
+                cond = handler.get('conditionStatement', '')
+                for intent in data['context'].get('openIntents', []) + data['context'].get('userIntents', []):
+                    intent_name = intent.get('name')
+                    if intent_name and intent_name in str(cond):
+                        used_intents.add(intent_name)
+    
+    # 모든 인텐트 초기화 (정의된 인텐트 + 실제 사용되는 인텐트)
+    all_intents = set()
     for intent in data['context'].get('openIntents', []) + data['context'].get('userIntents', []):
         name = intent.get('name')
         if name:
-            intent_usage[name] = 0
-            intent_locations[name] = []
+            all_intents.add(name)
+    
+    # 실제 사용되는 인텐트도 추가
+    all_intents.update(used_intents)
+    
+    # 딕셔너리 초기화
+    for intent_name in all_intents:
+        intent_usage[intent_name] = 0
+        intent_locations[intent_name] = []
     
     # 플로우에서 인텐트 사용 현황 추적
     for flow in data['context'].get('flows', []):
