@@ -6,4 +6,3 @@ fpdf
 python-dotenv
 xlsxwriter
 pydantic
-
