@@ -19,44 +19,72 @@ def ensure_env_loaded():
 def analyze_bot_json(data):
     """봇 JSON 데이터를 분석하여 flows, pages, handlers, variables를 반환"""
     try:
-        if not data or 'context' not in data or 'flows' not in data['context']:
-            raise ValueError("유효하지 않은 데이터 구조입니다.")
+        # 데이터 유효성 검사 강화
+        if not data or not isinstance(data, dict):
+            return [], [], [], []
+            
+        if 'context' not in data:
+            return [], [], [], []
+            
+        context = data['context']
+        if not isinstance(context, dict):
+            return [], [], [], []
+            
+        if 'flows' not in context:
+            return [], [], [], []
         
-        flows = data['context']['flows']
+        flows = context['flows']
         if not isinstance(flows, list):
-            raise ValueError("flows가 리스트가 아닙니다.")
+            return [], [], [], []
         
         pages = []
         handlers = []
         variables = set()
         
         for flow in flows:
-            if not isinstance(flow, dict) or 'name' not in flow or 'pages' not in flow:
+            if not isinstance(flow, dict):
+                continue
+                
+            if 'name' not in flow or 'pages' not in flow:
                 continue
                 
             flow_name = flow['name']
-            for page in flow.get('pages', []):
-                if not isinstance(page, dict) or 'name' not in page:
+            flow_pages = flow.get('pages', [])
+            
+            if not isinstance(flow_pages, list):
+                continue
+                
+            for page in flow_pages:
+                if not isinstance(page, dict):
+                    continue
+                    
+                if 'name' not in page:
                     continue
                     
                 # Flow명 + Page명 조합으로 저장
                 pages.append((flow_name, page['name']))
                 
-                for handler in page.get('handlers', []):
-                    if isinstance(handler, dict):
-                        handlers.append(handler)
-                        
-                        # action.parameterPresets에서 변수 추출
-                        action = handler.get('action', {})
-                        if isinstance(action, dict):
-                            for preset in action.get('parameterPresets', []):
-                                if isinstance(preset, dict) and 'name' in preset:
-                                    variables.add(preset['name'])
-                        
-                        # parameterPresets에서 변수 추출
-                        for preset in handler.get('parameterPresets', []):
-                            if isinstance(preset, dict) and 'name' in preset:
-                                variables.add(preset['name'])
+                page_handlers = page.get('handlers', [])
+                if isinstance(page_handlers, list):
+                    for handler in page_handlers:
+                        if isinstance(handler, dict):
+                            handlers.append(handler)
+                            
+                            # action.parameterPresets에서 변수 추출
+                            action = handler.get('action', {})
+                            if isinstance(action, dict):
+                                action_presets = action.get('parameterPresets', [])
+                                if isinstance(action_presets, list):
+                                    for preset in action_presets:
+                                        if isinstance(preset, dict) and 'name' in preset:
+                                            variables.add(preset['name'])
+                            
+                            # parameterPresets에서 변수 추출
+                            handler_presets = handler.get('parameterPresets', [])
+                            if isinstance(handler_presets, list):
+                                for preset in handler_presets:
+                                    if isinstance(preset, dict) and 'name' in preset:
+                                        variables.add(preset['name'])
         
         return flows, pages, handlers, list(variables)
         
