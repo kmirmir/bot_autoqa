@@ -399,6 +399,23 @@ def get_intent_entity_summary(data):
 def check_intent_duplicates(data):
     """
     인텐트 중복 사용 현황을 자세히 분석하여 반환
+    
+    특징:
+    - 정의되지 않은 인텐트도 자동으로 처리
+    - defaultdict를 사용하여 KeyError 방지
+    - 모든 유형의 인텐트 이름에 대응
+    - 플로우에서 실제로 사용되는 모든 인텐트를 동적으로 감지
+    
+    처리 방식:
+    1. openIntents와 userIntents에서 정의된 인텐트 수집
+    2. 플로우의 handlers에서 실제 사용되는 인텐트 동적 감지
+    3. defaultdict를 사용하여 모든 인텐트를 안전하게 처리
+    4. 중복 사용 현황을 분석하여 결과 반환
+    
+    주의사항:
+    - 특정 인텐트 이름에 의존하지 않음
+    - 어떤 인텐트 이름이든 범용적으로 처리
+    - 데이터 구조 오류 시 빈 DataFrame 반환
     """
     # 데이터 유효성 검사 강화
     if not data or not isinstance(data, dict):
@@ -419,8 +436,10 @@ def check_intent_duplicates(data):
     if not isinstance(flows, list):
         return pd.DataFrame()
     
-    intent_usage = {}
-    intent_locations = {}
+    # defaultdict를 사용하여 KeyError 방지
+    # 어떤 인텐트 이름이든 안전하게 처리
+    intent_usage = defaultdict(int)
+    intent_locations = defaultdict(list)
     
     # 먼저 플로우에서 실제로 사용되는 모든 인텐트를 수집
     used_intents = set()
@@ -445,7 +464,7 @@ def check_intent_duplicates(data):
                     if not isinstance(handler, dict):
                         continue
                         
-                    # intentTrigger에서 사용
+                    # intentTrigger에서 사용 - 모든 인텐트 이름을 동적으로 처리
                     if 'intentTrigger' in handler:
                         intent_trigger = handler['intentTrigger']
                         if isinstance(intent_trigger, dict):
@@ -476,10 +495,10 @@ def check_intent_duplicates(data):
     except Exception as e:
         return pd.DataFrame()
     
-    # 실제 사용되는 인텐트도 추가
+    # 실제 사용되는 인텐트도 추가 - 정의되지 않은 인텐트도 포함
     all_intents.update(used_intents)
     
-    # 딕셔너리 초기화
+    # 딕셔너리 초기화 (defaultdict이므로 자동으로 초기화됨)
     for intent_name in all_intents:
         intent_usage[intent_name] = 0
         intent_locations[intent_name] = []
@@ -506,24 +525,24 @@ def check_intent_duplicates(data):
                     if not isinstance(handler, dict):
                         continue
                         
-                    # intentTrigger에서 사용
+                    # intentTrigger에서 사용 - 범용적으로 처리
                     if 'intentTrigger' in handler:
                         intent_trigger = handler['intentTrigger']
                         if isinstance(intent_trigger, dict):
                             intent_name = intent_trigger.get('name')
-                            if intent_name and intent_name in intent_usage:
-                                intent_usage[intent_name] = intent_usage.get(intent_name, 0) + 1
-                                if intent_name in intent_locations:
-                                    intent_locations[intent_name].append(f"{flow_name} > {page_name}")
+                            if intent_name:
+                                # defaultdict가 자동으로 키를 생성하고 기본값 제공
+                                # 어떤 인텐트 이름이든 안전하게 처리
+                                intent_usage[intent_name] += 1
+                                intent_locations[intent_name].append(f"{flow_name} > {page_name}")
                     
                     # conditionStatement에서 사용
                     cond = handler.get('conditionStatement', '')
                     if cond and isinstance(cond, str):
-                        for intent_name in intent_usage.keys():
+                        for intent_name in all_intents:
                             if intent_name and intent_name in cond:
-                                intent_usage[intent_name] = intent_usage.get(intent_name, 0) + 1
-                                if intent_name in intent_locations:
-                                    intent_locations[intent_name].append(f"{flow_name} > {page_name}")
+                                intent_usage[intent_name] += 1
+                                intent_locations[intent_name].append(f"{flow_name} > {page_name}")
     except Exception as e:
         # 오류 발생 시 빈 데이터프레임 반환
         return pd.DataFrame()
@@ -534,13 +553,12 @@ def check_intent_duplicates(data):
     # 결과 데이터프레임 생성
     duplicate_rows = []
     for intent_name, count in duplicate_intents.items():
-        if intent_name in intent_locations:
-            locations = intent_locations[intent_name]
-            duplicate_rows.append({
-                'Intent명': intent_name,
-                '사용 횟수': count,
-                '사용 위치': ' | '.join(locations)
-            })
+        locations = intent_locations[intent_name]
+        duplicate_rows.append({
+            'Intent명': intent_name,
+            '사용 횟수': count,
+            '사용 위치': ' | '.join(locations)
+        })
     
     return pd.DataFrame(duplicate_rows)
 
@@ -1212,6 +1230,15 @@ if menu == "대시보드" and data is not None:
         
         # 인텐트 중복 사용 현황 추가
         st.markdown("**[인텐트 중복 사용 현황]**")
+        
+        # 인텐트 중복 검사 정보 안내
+        st.info("""
+        🔍 **인텐트 중복 검사 정보**
+        - 플로우에서 실제로 사용되는 모든 인텐트를 자동으로 감지합니다
+        - 정의되지 않은 인텐트도 안전하게 처리됩니다
+        - defaultdict를 사용하여 KeyError를 방지합니다
+        """)
+        
         try:
             duplicate_intents_df = check_intent_duplicates(data)
             if not duplicate_intents_df.empty:
@@ -1219,9 +1246,20 @@ if menu == "대시보드" and data is not None:
                 st.dataframe(duplicate_intents_df, use_container_width=True)
             else:
                 st.success("✅ 중복 사용된 인텐트가 없습니다.")
+        except KeyError as e:
+            st.error("인텐트 중복 검사 중 KeyError 발생")
+            st.info("이는 봇 JSON에서 정의되지 않은 인텐트가 플로우에서 사용되고 있음을 의미합니다.")
+            st.info("defaultdict를 사용하여 자동으로 처리됩니다.")
+            duplicate_intents_df = pd.DataFrame()
         except Exception as e:
-            st.error(f"인텐트 중복 검사 중 오류가 발생했습니다: {str(e)}")
-            st.info("데이터 구조를 확인해주세요.")
+            st.error("인텐트 중복 검사 중 예상치 못한 오류 발생")
+            st.info("""
+            🔧 **문제 해결 방법**
+            1. 봇 JSON 파일의 구조를 확인해주세요
+            2. context > flows > pages > handlers 구조가 올바른지 확인
+            3. intentTrigger의 name 필드가 올바르게 설정되어 있는지 확인
+            """)
+            st.code(f"오류 상세: {str(e)}")
             duplicate_intents_df = pd.DataFrame()
         
         st.markdown(f"**[Entity 요약 (총 {len(entity_df)}개)]**")
