@@ -3,7 +3,7 @@ plotly
 openai
 pandas
 fpdf
-pyspellchecker
 python-dotenv
 xlsxwriter
 pydantic
+
