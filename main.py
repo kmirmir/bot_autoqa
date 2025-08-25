@@ -84,7 +84,7 @@ def summarize_flow_service_natural(data):
     if not data or not isinstance(data, dict) or 'context' not in data:
         return []
     
-    context = data['context']
+    context = data.get('context', {})
     if not isinstance(context, dict):
         return []
     
@@ -193,7 +193,7 @@ def get_handler_variable_details(data):
     if not data or not isinstance(data, dict) or 'context' not in data:
         return pd.DataFrame(), pd.DataFrame(), {}
     
-    context = data['context']
+    context = data.get('context', {})
     if not isinstance(context, dict):
         return pd.DataFrame(), pd.DataFrame(), {}
     
@@ -285,7 +285,7 @@ def get_intent_entity_summary(data):
     if not data or not isinstance(data, dict) or 'context' not in data:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
-    context = data['context']
+    context = data.get('context', {})
     if not isinstance(context, dict):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
@@ -407,7 +407,7 @@ def check_intent_duplicates(data):
     if 'context' not in data:
         return pd.DataFrame()
     
-    context = data['context']
+    context = data.get('context', {})
     if not isinstance(context, dict):
         return pd.DataFrame()
     
@@ -635,75 +635,113 @@ def summarize_list(val):
         return str(val)
 
 def parse_bot_structure_from_data(data):
-    flows = data["context"].get("flows", [])
-    intents = data["context"].get("openIntents", []) + data["context"].get("userIntents", [])
-    entities = data["context"].get("customEntities", [])
+    # 데이터 유효성 검사
+    if not data or not isinstance(data, dict) or 'context' not in data:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    
+    context = data.get('context', {})
+    flows = context.get("flows", [])
+    intents = context.get("openIntents", []) + context.get("userIntents", [])
+    entities = context.get("customEntities", [])
 
     flow_rows = []
-    for flow in flows:
-        flow_name = flow.get("name")
-        for page in flow.get("pages", []):
-            page_name = page.get("name")
-            action = page.get("action", {})
-            parameters = page.get("parameters", [])
-            for handler in page.get("handlers", []):
-                handler_type = handler.get("type")
-                handler_id = handler.get("id", "")
-                handler_action = handler.get("action", {})
-                handler_param_presets = handler_action.get("parameterPresets", [])
-                condition = handler.get("conditionStatement", "")
-                event_trigger = handler.get("eventTrigger", {})
-                intent_trigger = handler.get("intentTrigger", {})
-                transition_target = handler.get("transitionTarget", {})
-                flow_rows.append({
-                    "Flow": flow_name,
-                    "Page": page_name,
-                    "Page_Action": summarize_action(action),
-                    "Page_Parameters": summarize_list(parameters),
-                    "Handler_ID": handler_id,
-                    "Handler_Type": handler_type,
-                    "Handler_Condition": condition,
-                    "Handler_Action": summarize_action(handler_action),
-                    "Handler_ParameterPresets": summarize_list(handler_param_presets),
-                    "Handler_EventTrigger": str(event_trigger) if event_trigger else "",
-                    "Handler_IntentTrigger": str(intent_trigger) if intent_trigger else "",
-                    "Handler_TransitionTarget": str(transition_target) if transition_target else "",
-                })
-            if not page.get("handlers"):
-                flow_rows.append({
-                    "Flow": flow_name,
-                    "Page": page_name,
-                    "Page_Action": summarize_action(action),
-                    "Page_Parameters": summarize_list(parameters),
-                    "Handler_ID": "",
-                    "Handler_Type": "",
-                    "Handler_Condition": "",
-                    "Handler_Action": "",
-                    "Handler_ParameterPresets": "",
-                    "Handler_EventTrigger": "",
-                    "Handler_IntentTrigger": "",
-                    "Handler_TransitionTarget": "",
-                })
+    try:
+        for flow in flows:
+            if not isinstance(flow, dict):
+                continue
+            flow_name = flow.get("name")
+            if not flow_name:
+                continue
+            pages = flow.get("pages", [])
+            if not isinstance(pages, list):
+                continue
+            for page in pages:
+                if not isinstance(page, dict):
+                    continue
+                page_name = page.get("name")
+                if not page_name:
+                    continue
+                action = page.get("action", {})
+                parameters = page.get("parameters", [])
+                handlers = page.get("handlers", [])
+                if isinstance(handlers, list):
+                    for handler in handlers:
+                        if not isinstance(handler, dict):
+                            continue
+                        handler_type = handler.get("type")
+                        handler_id = handler.get("id", "")
+                        handler_action = handler.get("action", {})
+                        handler_param_presets = handler_action.get("parameterPresets", []) if isinstance(handler_action, dict) else []
+                        condition = handler.get("conditionStatement", "")
+                        event_trigger = handler.get("eventTrigger", {})
+                        intent_trigger = handler.get("intentTrigger", {})
+                        transition_target = handler.get("transitionTarget", {})
+                        flow_rows.append({
+                            "Flow": flow_name,
+                            "Page": page_name,
+                            "Page_Action": summarize_action(action),
+                            "Page_Parameters": summarize_list(parameters),
+                            "Handler_ID": handler_id,
+                            "Handler_Type": handler_type,
+                            "Handler_Condition": condition,
+                            "Handler_Action": summarize_action(handler_action),
+                            "Handler_ParameterPresets": summarize_list(handler_param_presets),
+                            "Handler_EventTrigger": str(event_trigger) if event_trigger else "",
+                            "Handler_IntentTrigger": str(intent_trigger) if intent_trigger else "",
+                            "Handler_TransitionTarget": str(transition_target) if transition_target else "",
+                        })
+                if not handlers:
+                    flow_rows.append({
+                        "Flow": flow_name,
+                        "Page": page_name,
+                        "Page_Action": summarize_action(action),
+                        "Page_Parameters": summarize_list(parameters),
+                        "Handler_ID": "",
+                        "Handler_Type": "",
+                        "Handler_Condition": "",
+                        "Handler_Action": "",
+                        "Handler_ParameterPresets": "",
+                        "Handler_EventTrigger": "",
+                        "Handler_IntentTrigger": "",
+                        "Handler_TransitionTarget": "",
+                    })
+    except Exception as e:
+        # 오류 발생 시 빈 데이터프레임 반환
+        pass
     flow_df = pd.DataFrame(flow_rows)
 
     intent_rows = []
-    for intent in intents:
-        intent_rows.append({
-            "Intent_Name": intent.get("name"),
-            "Sentences": ", ".join(intent.get("sentences", [])),
-            "RepresentativeSentences": ", ".join(intent.get("representativeSentences", [])),
-        })
+    try:
+        for intent in intents:
+            if isinstance(intent, dict):
+                intent_rows.append({
+                    "Intent_Name": intent.get("name"),
+                    "Sentences": ", ".join(intent.get("sentences", [])) if isinstance(intent.get("sentences", []), list) else "",
+                    "RepresentativeSentences": ", ".join(intent.get("representativeSentences", [])) if isinstance(intent.get("representativeSentences", []), list) else "",
+                })
+    except Exception as e:
+        # 오류 발생 시 빈 데이터프레임 반환
+        pass
     intent_df = pd.DataFrame(intent_rows)
 
     entity_rows = []
-    for entity in entities:
-        entity_name = entity.get("name")
-        for value in entity.get("entityValues", []):
-            entity_rows.append({
-                "Entity_Name": entity_name,
-                "Representative": value.get("representative"),
-                "Synonyms": ", ".join(value.get("synonyms", [])),
-            })
+    try:
+        for entity in entities:
+            if isinstance(entity, dict):
+                entity_name = entity.get("name")
+                if entity_name:
+                    entity_values = entity.get("entityValues", [])
+                    if isinstance(entity_values, list):
+                        for value in entity_values:
+                            if isinstance(value, dict):
+                                entity_rows.append({
+                                    "Entity_Name": entity_name,
+                                    "Representative": value.get("representative"),
+                                    "Synonyms": ", ".join(value.get("synonyms", [])) if isinstance(value.get("synonyms", []), list) else "",
+                                })
+    except Exception as e:
+        # 오류 발생 시 빈 데이터프레임 반환
+        pass
     entity_df = pd.DataFrame(entity_rows)
 
     return flow_df, intent_df, entity_df
@@ -714,37 +752,57 @@ def extract_responses(data):
     챗봇: <p>...</p> 태그, 콜봇: promptGroup.prompts 배열
     [{Flow, Page, Response Text, ...}]
     """
+    # 데이터 유효성 검사
+    if not data or not isinstance(data, dict) or 'context' not in data:
+        return []
+    
     rows = []
-    for flow in data['context'].get('flows', []):
-        flow_name = flow.get('name')
-        for page in flow.get('pages', []):
-            page_name = page.get('name')
-            # Page-level action.responses
-            responses = []
-            if 'action' in page and 'responses' in page['action']:
-                responses.extend(page['action']['responses'])
-            # Handler-level action.responses
-            for handler in page.get('handlers', []):
-                if 'action' in handler and 'responses' in handler['action']:
-                    responses.extend(handler['action']['responses'])
-            for resp in responses:
-                # response는 dict, text는 resp['record']['text'] 또는 resp['text'] 또는 resp['promptGroup']['prompts']
-                text = None
-                if 'record' in resp and resp['record'] and 'text' in resp['record']:
-                    text = resp['record']['text']
-                elif 'text' in resp:
-                    text = resp['text']
-                elif 'promptGroup' in resp and resp['promptGroup'] and 'prompts' in resp['promptGroup']:
-                    # 콜봇: promptGroup.prompts 배열에서 텍스트 추출
-                    prompts = resp['promptGroup']['prompts']
-                    if isinstance(prompts, list) and prompts:
-                        text = ' '.join([str(p) for p in prompts if p])
-                if text:
-                    rows.append({
-                        'Flow': flow_name,
-                        'Page': page_name,
-                        'Response Text': text
-                    })
+    try:
+        for flow in data.get('context', {}).get('flows', []):
+            if not isinstance(flow, dict):
+                continue
+            flow_name = flow.get('name')
+            if not flow_name:
+                continue
+            pages = flow.get('pages', [])
+            if not isinstance(pages, list):
+                continue
+            for page in pages:
+                if not isinstance(page, dict):
+                    continue
+                page_name = page.get('name')
+                if not page_name:
+                    continue
+                # Page-level action.responses
+                responses = []
+                if 'action' in page and 'responses' in page['action']:
+                    responses.extend(page['action']['responses'])
+                # Handler-level action.responses
+                for handler in page.get('handlers', []):
+                    if 'action' in handler and 'responses' in handler['action']:
+                        responses.extend(handler['action']['responses'])
+                for resp in responses:
+                    # response는 dict, text는 resp['record']['text'] 또는 resp['text'] 또는 resp['promptGroup']['prompts']
+                    text = None
+                    if 'record' in resp and resp['record'] and 'text' in resp['record']:
+                        text = resp['record']['text']
+                    elif 'text' in resp:
+                        text = resp['text']
+                    elif 'promptGroup' in resp and resp['promptGroup'] and 'prompts' in resp['promptGroup']:
+                        # 콜봇: promptGroup.prompts 배열에서 텍스트 추출
+                        prompts = resp['promptGroup']['prompts']
+                        if isinstance(prompts, list) and prompts:
+                            text = ' '.join([str(p) for p in prompts if p])
+                    if text:
+                        rows.append({
+                            'Flow': flow_name,
+                            'Page': page_name,
+                            'Response Text': text
+                        })
+    except Exception as e:
+        # 오류 발생 시 빈 리스트 반환
+        pass
+    
     return rows
 
 # 오타 검출(OpenAI)
@@ -776,11 +834,27 @@ def extract_response_texts_by_flow(data):
     챗봇: <p>...</p> 태그, 콜봇: promptGroup.prompts 배열
     [{Flow, Page, 위치, Handler Type, Condition, Response Type, TemplateId, Response Text}]
     """
+    # 데이터 유효성 검사
+    if not data or not isinstance(data, dict) or 'context' not in data:
+        return []
+    
     rows = []
-    for flow in data['context'].get('flows', []):
-        flow_name = flow.get('name')
-        for page in flow.get('pages', []):
-            page_name = page.get('name')
+    try:
+        for flow in data.get('context', {}).get('flows', []):
+            if not isinstance(flow, dict):
+                continue
+            flow_name = flow.get('name')
+            if not flow_name:
+                continue
+            pages = flow.get('pages', [])
+            if not isinstance(pages, list):
+                continue
+            for page in pages:
+                if not isinstance(page, dict):
+                    continue
+                page_name = page.get('name')
+                if not page_name:
+                    continue
             # Page-level action.responses
             if 'action' in page and 'responses' in page['action']:
                 for resp in page['action']['responses']:
@@ -931,6 +1005,10 @@ def extract_response_texts_by_flow(data):
                                         'TemplateId': template_id,
                                         'Response Text': clean_text
                                     })
+    except Exception as e:
+        # 오류 발생 시 빈 리스트 반환
+        pass
+    
     # null/빈값 row 전체 제외 (혹시라도 남아있을 경우)
     rows = [row for row in rows if row.get('Response Text') not in [None, '', 'null']]
     return rows
@@ -1052,28 +1130,48 @@ if menu == "대시보드" and data is not None:
     with tab1:
         st.markdown("<div class='tab-section-title'><span class='icon'>📄</span> Flow별 서비스 시나리오 요약</div>", unsafe_allow_html=True)
         flow_summaries = summarize_flow_service_natural(data)
-        flows_data = data['context']['flows']
-        for i, flow in enumerate(flows_data):
-            flow_name = flow['name']
-            pages_in_flow = flow['pages']
-            # page간 이동 해석
-            page_links = []
-            for page in pages_in_flow:
-                for handler in page.get('handlers', []):
-                    target = handler.get('transitionTarget', {})
-                    if target.get('type') == 'CUSTOM' and target.get('page'):
-                        page_links.append((page['name'], target['page']))
-            # Graphviz 다이어그램 생성
-            graph_lines = [f'digraph "{flow_name}" {{']
-            for page in pages_in_flow:
-                graph_lines.append(f'    "{page["name"]}";')
-            for src, dst in page_links:
-                graph_lines.append(f'    "{src}" -> "{dst}";')
-            graph_lines.append('}')
-            graph_str = '\n'.join(graph_lines)
-            st.markdown(f"#### Flow: {flow_name}")
-            st.graphviz_chart(graph_str)
-            st.markdown(flow_summaries[i])
+        try:
+            flows_data = data.get('context', {}).get('flows', [])
+            if isinstance(flows_data, list) and flows_data:
+                for i, flow in enumerate(flows_data):
+                    if not isinstance(flow, dict):
+                        continue
+                    flow_name = flow.get('name', 'Unknown Flow')
+                    pages_in_flow = flow.get('pages', [])
+                    if not isinstance(pages_in_flow, list):
+                        continue
+                    # page간 이동 해석
+                    page_links = []
+                    for page in pages_in_flow:
+                        if not isinstance(page, dict):
+                            continue
+                        handlers = page.get('handlers', [])
+                        if isinstance(handlers, list):
+                            for handler in handlers:
+                                if isinstance(handler, dict):
+                                    target = handler.get('transitionTarget', {})
+                                    if isinstance(target, dict) and target.get('type') == 'CUSTOM' and target.get('page'):
+                                        page_name = page.get('name', '')
+                                        if page_name:
+                                            page_links.append((page_name, target['page']))
+                    # Graphviz 다이어그램 생성
+                    graph_lines = [f'digraph "{flow_name}" {{']
+                    for page in pages_in_flow:
+                        if isinstance(page, dict) and 'name' in page:
+                            graph_lines.append(f'    "{page["name"]}";')
+                    for src, dst in page_links:
+                        graph_lines.append(f'    "{src}" -> "{dst}";')
+                    graph_lines.append('}')
+                    graph_str = '\n'.join(graph_lines)
+                    st.markdown(f"#### Flow: {flow_name}")
+                    st.graphviz_chart(graph_str)
+                    if i < len(flow_summaries):
+                        st.markdown(flow_summaries[i])
+            else:
+                st.info("Flow 데이터를 찾을 수 없습니다.")
+        except Exception as e:
+            st.error(f"Flow 시나리오 분석 중 오류가 발생했습니다: {str(e)}")
+            st.info("데이터 구조를 확인해주세요.")
     with tab2:
         st.markdown("<div class='tab-section-title'><span class='icon'>🛠️</span> 핸들러/변수 상세 요약</div>", unsafe_allow_html=True)
         handler_df, variable_df, variable_usage = get_handler_variable_details(data)
@@ -1545,4 +1643,3 @@ if menu == "Response Text 검출" and data is not None:
             file_name="response_typo_check.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-
