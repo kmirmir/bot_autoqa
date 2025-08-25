@@ -26,7 +26,7 @@ def analyze_bot_json(data):
         if 'context' not in data:
             return [], [], [], []
             
-        context = data['context']
+        context = data.get('context', {})
         if not isinstance(context, dict):
             return [], [], [], []
             
@@ -161,7 +161,7 @@ def validate_bot_json(data, custom_checks=None):
     errors = []
     
     try:
-        if not data or 'context' not in data or 'flows' not in data['context']:
+        if not data or 'context' not in data or 'flows' not in data.get('context', {}):
             errors.append({
                 'type': 'DataStructureError',
                 'message': "유효하지 않은 데이터 구조입니다.",
@@ -170,7 +170,7 @@ def validate_bot_json(data, custom_checks=None):
             })
             return errors
         
-        flows = data['context']['flows']
+        flows = data.get('context', {}).get('flows', [])
         if not isinstance(flows, list):
             errors.append({
                 'type': 'DataStructureError',
@@ -183,7 +183,7 @@ def validate_bot_json(data, custom_checks=None):
         page_names = set()
         # --- INTENT/ENTITY/이벤트/연산자/함수/예약어 목록 추출 ---
         all_intents = set()
-        for intent in data['context'].get('openIntents', []) + data['context'].get('userIntents', []):
+        for intent in data.get('context', {}).get('openIntents', []) + data.get('context', {}).get('userIntents', []):
             if isinstance(intent, dict) and intent.get('name'):
                 all_intents.add(intent['name'])
         
@@ -287,7 +287,7 @@ def validate_bot_json(data, custom_checks=None):
                             
                             # intent/entity name 목록 추출
                             all_entities = set()
-                            for entity in data['context'].get('customEntities', []):
+                            for entity in data.get('context', {}).get('customEntities', []):
                                 if isinstance(entity, dict) and entity.get('name'):
                                     all_entities.add(entity['name'])
                             
@@ -395,4 +395,4 @@ def suggest_fixes(errors, data, use_openai=False):
             suggestions.append(f"{err['location']}의 조건문을 점검하세요. '{err['suggestion']}'")
         elif err['type'] == 'CustomCheck':
             suggestions.append(f"사용자 정의 검수 항목: {err['message']}")
-    return suggestions
+    return suggestions 
