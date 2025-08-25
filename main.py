@@ -498,10 +498,17 @@ def check_intent_duplicates(data):
     # 실제 사용되는 인텐트도 추가 - 정의되지 않은 인텐트도 포함
     all_intents.update(used_intents)
     
-    # 딕셔너리 초기화 (defaultdict이므로 자동으로 초기화됨)
+    # 딕셔너리 초기화 - 모든 인텐트에 대해 빈 리스트로 초기화
     for intent_name in all_intents:
         intent_usage[intent_name] = 0
         intent_locations[intent_name] = []
+    
+    # 추가 안전장치: defaultdict가 제대로 작동하지 않을 경우를 대비
+    def safe_append(dict_obj, key, value):
+        """안전하게 딕셔너리에 값을 추가하는 함수"""
+        if key not in dict_obj:
+            dict_obj[key] = []
+        dict_obj[key].append(value)
     
     # 플로우에서 인텐트 사용 현황 추적
     try:
@@ -531,10 +538,9 @@ def check_intent_duplicates(data):
                         if isinstance(intent_trigger, dict):
                             intent_name = intent_trigger.get('name')
                             if intent_name:
-                                # defaultdict가 자동으로 키를 생성하고 기본값 제공
-                                # 어떤 인텐트 이름이든 안전하게 처리
+                                # 안전하게 값 추가
                                 intent_usage[intent_name] += 1
-                                intent_locations[intent_name].append(f"{flow_name} > {page_name}")
+                                safe_append(intent_locations, intent_name, f"{flow_name} > {page_name}")
                     
                     # conditionStatement에서 사용
                     cond = handler.get('conditionStatement', '')
@@ -542,7 +548,7 @@ def check_intent_duplicates(data):
                         for intent_name in all_intents:
                             if intent_name and intent_name in cond:
                                 intent_usage[intent_name] += 1
-                                intent_locations[intent_name].append(f"{flow_name} > {page_name}")
+                                safe_append(intent_locations, intent_name, f"{flow_name} > {page_name}")
     except Exception as e:
         # 오류 발생 시 빈 데이터프레임 반환
         return pd.DataFrame()
