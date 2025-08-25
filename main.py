@@ -80,207 +80,401 @@ if st.button("OpenAI API 키 정상동작 체크"):
 
 # Flow별 서비스 시나리오 요약 (Page간 이동 고려, 자연어)
 def summarize_flow_service_natural(data):
-    flows = data['context']['flows']
+    # 데이터 유효성 검사
+    if not data or not isinstance(data, dict) or 'context' not in data:
+        return []
+    
+    context = data['context']
+    if not isinstance(context, dict):
+        return []
+    
+    flows = context.get('flows', [])
+    if not isinstance(flows, list):
+        return []
+    
     summaries = []
-    for flow in flows:
-        flow_name = flow['name']
-        pages = flow['pages']
-        page_names = [page['name'] for page in pages]
-        # page간 이동 해석
-        page_links = {}
-        for page in pages:
-            for handler in page.get('handlers', []):
-                target = handler.get('transitionTarget', {})
-                if target.get('type') == 'CUSTOM' and target.get('page'):
-                    page_links.setdefault(page['name'], set()).add(target['page'])
-        # 주요 시나리오 흐름 추출 (DFS)
-        def dfs(path, visited):
-            cur = path[-1]
-            if cur not in page_links or not page_links[cur]:
-                return [path]
-            flows = []
-            for nxt in page_links[cur]:
-                if nxt in visited:
+    
+    try:
+        for flow in flows:
+            if not isinstance(flow, dict):
+                continue
+                
+            flow_name = flow.get('name', 'Unknown Flow')
+            pages = flow.get('pages', [])
+            if not isinstance(pages, list):
+                continue
+                
+            page_names = []
+            for page in pages:
+                if isinstance(page, dict) and 'name' in page:
+                    page_names.append(page['name'])
+            
+            # page간 이동 해석
+            page_links = {}
+            for page in pages:
+                if not isinstance(page, dict):
                     continue
-                flows.extend(dfs(path + [nxt], visited | {nxt}))
-            return flows
-        scenario_paths = []
-        if pages:
-            scenario_paths = dfs([pages[0]['name']], {pages[0]['name']})
-        # 자연어 시나리오 요약
-        scenario_desc = ""
-        if scenario_paths:
-            # 가장 긴 경로를 대표 시나리오로
-            main_path = max(scenario_paths, key=len)
-            scenario_desc = f"이 Flow는 '{main_path[0]}'에서 시작하여 "
-            if len(main_path) > 2:
-                scenario_desc += ", ".join(main_path[1:-1]) + f"를 거쳐 '{main_path[-1]}'로 이동하는 주요 시나리오를 포함합니다."
-            elif len(main_path) == 2:
-                scenario_desc += f"'{main_path[1]}'로 이동하는 시나리오를 포함합니다."
+                handlers = page.get('handlers', [])
+                if not isinstance(handlers, list):
+                    continue
+                    
+                for handler in handlers:
+                    if not isinstance(handler, dict):
+                        continue
+                    target = handler.get('transitionTarget', {})
+                    if isinstance(target, dict) and target.get('type') == 'CUSTOM' and target.get('page'):
+                        page_name = page.get('name', '')
+                        if page_name:
+                            page_links.setdefault(page_name, set()).add(target['page'])
+            
+            # 주요 시나리오 흐름 추출 (DFS)
+            def dfs(path, visited):
+                cur = path[-1]
+                if cur not in page_links or not page_links[cur]:
+                    return [path]
+                flows = []
+                for nxt in page_links[cur]:
+                    if nxt in visited:
+                        continue
+                    flows.extend(dfs(path + [nxt], visited | {nxt}))
+                return flows
+            
+            scenario_paths = []
+            if pages and len(pages) > 0:
+                first_page = pages[0]
+                if isinstance(first_page, dict) and 'name' in first_page:
+                    scenario_paths = dfs([first_page['name']], {first_page['name']})
+            
+            # 자연어 시나리오 요약
+            scenario_desc = ""
+            if scenario_paths:
+                # 가장 긴 경로를 대표 시나리오로
+                main_path = max(scenario_paths, key=len)
+                scenario_desc = f"이 Flow는 '{main_path[0]}'에서 시작하여 "
+                if len(main_path) > 2:
+                    scenario_desc += ", ".join(main_path[1:-1]) + f"를 거쳐 '{main_path[-1]}'로 이동하는 주요 시나리오를 포함합니다."
+                elif len(main_path) == 2:
+                    scenario_desc += f"'{main_path[1]}'로 이동하는 시나리오를 포함합니다."
+                else:
+                    scenario_desc += "단일 페이지로 구성되어 있습니다."
             else:
-                scenario_desc += "단일 페이지로 구성되어 있습니다."
-        else:
-            scenario_desc = "시나리오 흐름을 해석할 수 없습니다."
-        # 안내문 추출 (첫 Page의 record.text 또는 action.responses의 record.text)
-        first_page = pages[0] if pages else None
-        guide_text = None
-        if first_page:
-            if 'record' in first_page and first_page['record'] and 'text' in first_page['record']:
-                guide_text = first_page['record']['text']
-            elif 'action' in first_page and 'responses' in first_page['action']:
-                for resp in first_page['action']['responses']:
-                    if 'record' in resp and resp['record'] and 'text' in resp['record']:
-                        guide_text = resp['record']['text']
-                        break
-        # 요약문 생성
-        summary = f"**Flow: {flow_name}**\n"
-        if guide_text:
-            summary += f"- 주요 안내: {guide_text}\n"
-        summary += f"- 주요 페이지: {', '.join(page_names[:3])}\n"
-        summary += f"- {scenario_desc}"
-        summaries.append(summary)
+                scenario_desc = "시나리오 흐름을 해석할 수 없습니다."
+            
+            # 안내문 추출 (첫 Page의 record.text 또는 action.responses의 record.text)
+            first_page = pages[0] if pages else None
+            guide_text = None
+            if first_page and isinstance(first_page, dict):
+                if 'record' in first_page and first_page['record'] and isinstance(first_page['record'], dict) and 'text' in first_page['record']:
+                    guide_text = first_page['record']['text']
+                elif 'action' in first_page and first_page['action'] and isinstance(first_page['action'], dict) and 'responses' in first_page['action']:
+                    responses = first_page['action']['responses']
+                    if isinstance(responses, list):
+                        for resp in responses:
+                            if isinstance(resp, dict) and 'record' in resp and resp['record'] and isinstance(resp['record'], dict) and 'text' in resp['record']:
+                                guide_text = resp['record']['text']
+                                break
+            
+            # 요약문 생성
+            summary = f"**Flow: {flow_name}**\n"
+            if guide_text:
+                summary += f"- 주요 안내: {guide_text}\n"
+            summary += f"- 주요 페이지: {', '.join(page_names[:3])}\n"
+            summary += f"- {scenario_desc}"
+            summaries.append(summary)
+    except Exception as e:
+        # 오류 발생 시 빈 리스트 반환
+        pass
+    
     return summaries
 
 # 핸들러/변수 상세 요약 테이블 생성 (변수 상세 설명 포함)
 def get_handler_variable_details(data):
-    flows = data['context']['flows']
+    # 데이터 유효성 검사
+    if not data or not isinstance(data, dict) or 'context' not in data:
+        return pd.DataFrame(), pd.DataFrame(), {}
+    
+    context = data['context']
+    if not isinstance(context, dict):
+        return pd.DataFrame(), pd.DataFrame(), {}
+    
+    flows = context.get('flows', [])
+    if not isinstance(flows, list):
+        return pd.DataFrame(), pd.DataFrame(), {}
+    
     handler_rows = []
     variable_rows = []
     variable_usage = {}  # 변수명: [dict(Flow, Page, Handler Type, Condition, Value, Where)]
-    for flow in flows:
-        flow_name = flow['name']
-        for page in flow['pages']:
-            page_name = page['name']
-            for handler in page.get('handlers', []):
-                handler_type = handler.get('type')
-                cond = handler.get('conditionStatement', None)
-                handler_rows.append({
-                    'Flow': flow_name,
-                    'Page': page_name,
-                    'Handler Type': handler_type,
-                    'Condition': cond if cond else ''
-                })
-                # 변수
-                for preset in handler.get('action', {}).get('parameterPresets', []):
-                    row = {
+    
+    try:
+        for flow in flows:
+            if not isinstance(flow, dict):
+                continue
+            flow_name = flow.get('name', 'Unknown Flow')
+            pages = flow.get('pages', [])
+            if not isinstance(pages, list):
+                continue
+                
+            for page in pages:
+                if not isinstance(page, dict):
+                    continue
+                page_name = page.get('name', 'Unknown Page')
+                handlers = page.get('handlers', [])
+                if not isinstance(handlers, list):
+                    continue
+                    
+                for handler in handlers:
+                    if not isinstance(handler, dict):
+                        continue
+                        
+                    handler_type = handler.get('type', '')
+                    cond = handler.get('conditionStatement', '')
+                    
+                    handler_rows.append({
                         'Flow': flow_name,
                         'Page': page_name,
                         'Handler Type': handler_type,
-                        'Condition': cond if cond else '',
-                        'Variable': preset['name'],
-                        'Value': preset.get('value', ''),
-                        'Where': 'action.parameterPresets'
-                    }
-                    variable_rows.append(row)
-                    variable_usage.setdefault(preset['name'], []).append(row)
-                for preset in handler.get('parameterPresets', []):
-                    row = {
-                        'Flow': flow_name,
-                        'Page': page_name,
-                        'Handler Type': handler_type,
-                        'Condition': cond if cond else '',
-                        'Variable': preset['name'],
-                        'Value': preset.get('value', ''),
-                        'Where': 'parameterPresets'
-                    }
-                    variable_rows.append(row)
-                    variable_usage.setdefault(preset['name'], []).append(row)
+                        'Condition': cond if cond else ''
+                    })
+                    
+                    # 변수 - action.parameterPresets
+                    action = handler.get('action', {})
+                    if isinstance(action, dict):
+                        action_presets = action.get('parameterPresets', [])
+                        if isinstance(action_presets, list):
+                            for preset in action_presets:
+                                if isinstance(preset, dict) and 'name' in preset:
+                                    row = {
+                                        'Flow': flow_name,
+                                        'Page': page_name,
+                                        'Handler Type': handler_type,
+                                        'Condition': cond if cond else '',
+                                        'Variable': preset['name'],
+                                        'Value': preset.get('value', ''),
+                                        'Where': 'action.parameterPresets'
+                                    }
+                                    variable_rows.append(row)
+                                    variable_usage.setdefault(preset['name'], []).append(row)
+                    
+                    # 변수 - parameterPresets
+                    handler_presets = handler.get('parameterPresets', [])
+                    if isinstance(handler_presets, list):
+                        for preset in handler_presets:
+                            if isinstance(preset, dict) and 'name' in preset:
+                                row = {
+                                    'Flow': flow_name,
+                                    'Page': page_name,
+                                    'Handler Type': handler_type,
+                                    'Condition': cond if cond else '',
+                                    'Variable': preset['name'],
+                                    'Value': preset.get('value', ''),
+                                    'Where': 'parameterPresets'
+                                }
+                                variable_rows.append(row)
+                                variable_usage.setdefault(preset['name'], []).append(row)
+    except Exception as e:
+        # 오류 발생 시 빈 데이터프레임 반환
+        pass
+    
     handler_df = pd.DataFrame(handler_rows)
     variable_df = pd.DataFrame(variable_rows)
     return handler_df, variable_df, variable_usage
 
 # Intent/Entity 요약 및 오류 검수 함수
 def get_intent_entity_summary(data):
+    # 데이터 유효성 검사
+    if not data or not isinstance(data, dict) or 'context' not in data:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    
+    context = data['context']
+    if not isinstance(context, dict):
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    
     # Intents
     intents = []
     intent_names = set()
-    for intent in data['context'].get('openIntents', []) + data['context'].get('userIntents', []):
-        name = intent.get('name')
-        intent_names.add(name)
-        example = ", ".join(intent.get('sentences', [])[:3])
-        intents.append({
-            'Intent명': name,
-            '예시 문장': example
-        })
+    try:
+        open_intents = context.get('openIntents', [])
+        user_intents = context.get('userIntents', [])
+        
+        for intent in open_intents + user_intents:
+            if isinstance(intent, dict):
+                name = intent.get('name')
+                if name:
+                    intent_names.add(name)
+                    sentences = intent.get('sentences', [])
+                    if isinstance(sentences, list):
+                        example = ", ".join(sentences[:3])
+                    else:
+                        example = ""
+                    intents.append({
+                        'Intent명': name,
+                        '예시 문장': example
+                    })
+    except Exception as e:
+        pass
+    
     # Entities
     entities = []
     entity_names = set()
-    for entity in data['context'].get('customEntities', []):
-        name = entity.get('name')
-        entity_names.add(name)
-        for v in entity.get('entityValues', []):
-            rep = v.get('representative')
-            synonyms = ", ".join(v.get('synonyms', []))
-            entities.append({
-                'Entity명': name,
-                '대표값': rep,
-                '동의어': synonyms
-            })
+    try:
+        custom_entities = context.get('customEntities', [])
+        for entity in custom_entities:
+            if isinstance(entity, dict):
+                name = entity.get('name')
+                if name:
+                    entity_names.add(name)
+                    entity_values = entity.get('entityValues', [])
+                    if isinstance(entity_values, list):
+                        for v in entity_values:
+                            if isinstance(v, dict):
+                                rep = v.get('representative', '')
+                                synonyms = v.get('synonyms', [])
+                                if isinstance(synonyms, list):
+                                    synonyms_str = ", ".join(synonyms)
+                                else:
+                                    synonyms_str = ""
+                                entities.append({
+                                    'Entity명': name,
+                                    '대표값': rep,
+                                    '동의어': synonyms_str
+                                })
+    except Exception as e:
+        pass
+    
     # Intent 오류 검수(중복, 미사용 등)
     intent_errors = []
     if len(intent_names) != len(intents):
         intent_errors.append({'오류': '중복 Intent명 존재'})
+    
     # Entity 오류 검수(중복, 미사용 등)
     entity_errors = []
-    if len(entity_names) != len(data['context'].get('customEntities', [])):
-        entity_errors.append({'오류': '중복 Entity명 존재'})
+    try:
+        custom_entities = context.get('customEntities', [])
+        if len(entity_names) != len(custom_entities):
+            entity_errors.append({'오류': '중복 Entity명 존재'})
+    except Exception as e:
+        pass
+    
     # 미사용 Intent/Entity(플로우/핸들러에서 참조되지 않는 경우)
-    # (간단히 플로우 내 intentTrigger, conditionStatement 등에서 참조되는지 확인)
     used_intents = set()
     used_entities = set()
-    for flow in data['context'].get('flows', []):
-        for page in flow.get('pages', []):
-            for handler in page.get('handlers', []):
-                # intentTrigger
-                if 'intentTrigger' in handler:
-                    used_intents.add(handler['intentTrigger'].get('name'))
-                # conditionStatement 내 intent명/엔티티명
-                cond = handler.get('conditionStatement', '')
-                for iname in intent_names:
-                    if iname and iname in str(cond):
-                        used_intents.add(iname)
-                for ename in entity_names:
-                    if ename and ename in str(cond):
-                        used_entities.add(ename)
+    try:
+        flows = context.get('flows', [])
+        for flow in flows:
+            if isinstance(flow, dict):
+                pages = flow.get('pages', [])
+                if isinstance(pages, list):
+                    for page in pages:
+                        if isinstance(page, dict):
+                            handlers = page.get('handlers', [])
+                            if isinstance(handlers, list):
+                                for handler in handlers:
+                                    if isinstance(handler, dict):
+                                        # intentTrigger
+                                        if 'intentTrigger' in handler:
+                                            intent_trigger = handler['intentTrigger']
+                                            if isinstance(intent_trigger, dict):
+                                                used_intents.add(intent_trigger.get('name'))
+                                        # conditionStatement 내 intent명/엔티티명
+                                        cond = handler.get('conditionStatement', '')
+                                        if cond and isinstance(cond, str):
+                                            for iname in intent_names:
+                                                if iname and iname in cond:
+                                                    used_intents.add(iname)
+                                            for ename in entity_names:
+                                                if ename and ename in cond:
+                                                    used_entities.add(ename)
+    except Exception as e:
+        pass
+    
     unused_intents = intent_names - used_intents
     unused_entities = entity_names - used_entities
     if unused_intents:
         intent_errors.append({'오류': f'미사용 Intent: {", ".join(unused_intents)}'})
     if unused_entities:
         entity_errors.append({'오류': f'미사용 Entity: {", ".join(unused_entities)}'})
+    
     return pd.DataFrame(intents), pd.DataFrame(entities), pd.DataFrame(intent_errors), pd.DataFrame(entity_errors)
 
 def check_intent_duplicates(data):
     """
     인텐트 중복 사용 현황을 자세히 분석하여 반환
     """
+    # 데이터 유효성 검사 강화
+    if not data or not isinstance(data, dict):
+        return pd.DataFrame()
+    
+    if 'context' not in data:
+        return pd.DataFrame()
+    
+    context = data['context']
+    if not isinstance(context, dict):
+        return pd.DataFrame()
+    
+    # 안전한 데이터 접근
+    flows = context.get('flows', [])
+    open_intents = context.get('openIntents', [])
+    user_intents = context.get('userIntents', [])
+    
+    if not isinstance(flows, list):
+        return pd.DataFrame()
+    
     intent_usage = {}
     intent_locations = {}
     
     # 먼저 플로우에서 실제로 사용되는 모든 인텐트를 수집
     used_intents = set()
-    for flow in data['context'].get('flows', []):
-        for page in flow.get('pages', []):
-            for handler in page.get('handlers', []):
-                # intentTrigger에서 사용
-                if 'intentTrigger' in handler:
-                    intent_name = handler['intentTrigger'].get('name')
-                    if intent_name:
-                        used_intents.add(intent_name)
+    try:
+        for flow in flows:
+            if not isinstance(flow, dict):
+                continue
+            flow_name = flow.get('name', 'Unknown Flow')
+            pages = flow.get('pages', [])
+            if not isinstance(pages, list):
+                continue
                 
-                # conditionStatement에서 사용
-                cond = handler.get('conditionStatement', '')
-                for intent in data['context'].get('openIntents', []) + data['context'].get('userIntents', []):
-                    intent_name = intent.get('name')
-                    if intent_name and intent_name in str(cond):
-                        used_intents.add(intent_name)
+            for page in pages:
+                if not isinstance(page, dict):
+                    continue
+                page_name = page.get('name', 'Unknown Page')
+                handlers = page.get('handlers', [])
+                if not isinstance(handlers, list):
+                    continue
+                    
+                for handler in handlers:
+                    if not isinstance(handler, dict):
+                        continue
+                        
+                    # intentTrigger에서 사용
+                    if 'intentTrigger' in handler:
+                        intent_trigger = handler['intentTrigger']
+                        if isinstance(intent_trigger, dict):
+                            intent_name = intent_trigger.get('name')
+                            if intent_name:
+                                used_intents.add(intent_name)
+                    
+                    # conditionStatement에서 사용
+                    cond = handler.get('conditionStatement', '')
+                    if cond and isinstance(cond, str):
+                        for intent in open_intents + user_intents:
+                            if isinstance(intent, dict):
+                                intent_name = intent.get('name')
+                                if intent_name and intent_name in cond:
+                                    used_intents.add(intent_name)
+    except Exception as e:
+        # 오류 발생 시 빈 데이터프레임 반환
+        return pd.DataFrame()
     
     # 모든 인텐트 초기화 (정의된 인텐트 + 실제 사용되는 인텐트)
     all_intents = set()
-    for intent in data['context'].get('openIntents', []) + data['context'].get('userIntents', []):
-        name = intent.get('name')
-        if name:
-            all_intents.add(name)
+    try:
+        for intent in open_intents + user_intents:
+            if isinstance(intent, dict):
+                name = intent.get('name')
+                if name:
+                    all_intents.add(name)
+    except Exception as e:
+        return pd.DataFrame()
     
     # 실제 사용되는 인텐트도 추가
     all_intents.update(used_intents)
@@ -291,24 +485,48 @@ def check_intent_duplicates(data):
         intent_locations[intent_name] = []
     
     # 플로우에서 인텐트 사용 현황 추적
-    for flow in data['context'].get('flows', []):
-        flow_name = flow.get('name')
-        for page in flow.get('pages', []):
-            page_name = page.get('name')
-            for handler in page.get('handlers', []):
-                # intentTrigger에서 사용
-                if 'intentTrigger' in handler:
-                    intent_name = handler['intentTrigger'].get('name')
-                    if intent_name:
-                        intent_usage[intent_name] = intent_usage.get(intent_name, 0) + 1
-                        intent_locations[intent_name].append(f"{flow_name} > {page_name}")
+    try:
+        for flow in flows:
+            if not isinstance(flow, dict):
+                continue
+            flow_name = flow.get('name', 'Unknown Flow')
+            pages = flow.get('pages', [])
+            if not isinstance(pages, list):
+                continue
                 
-                # conditionStatement에서 사용
-                cond = handler.get('conditionStatement', '')
-                for intent_name in intent_usage.keys():
-                    if intent_name and intent_name in str(cond):
-                        intent_usage[intent_name] = intent_usage.get(intent_name, 0) + 1
-                        intent_locations[intent_name].append(f"{flow_name} > {page_name}")
+            for page in pages:
+                if not isinstance(page, dict):
+                    continue
+                page_name = page.get('name', 'Unknown Page')
+                handlers = page.get('handlers', [])
+                if not isinstance(handlers, list):
+                    continue
+                    
+                for handler in handlers:
+                    if not isinstance(handler, dict):
+                        continue
+                        
+                    # intentTrigger에서 사용
+                    if 'intentTrigger' in handler:
+                        intent_trigger = handler['intentTrigger']
+                        if isinstance(intent_trigger, dict):
+                            intent_name = intent_trigger.get('name')
+                            if intent_name and intent_name in intent_usage:
+                                intent_usage[intent_name] = intent_usage.get(intent_name, 0) + 1
+                                if intent_name in intent_locations:
+                                    intent_locations[intent_name].append(f"{flow_name} > {page_name}")
+                    
+                    # conditionStatement에서 사용
+                    cond = handler.get('conditionStatement', '')
+                    if cond and isinstance(cond, str):
+                        for intent_name in intent_usage.keys():
+                            if intent_name and intent_name in cond:
+                                intent_usage[intent_name] = intent_usage.get(intent_name, 0) + 1
+                                if intent_name in intent_locations:
+                                    intent_locations[intent_name].append(f"{flow_name} > {page_name}")
+    except Exception as e:
+        # 오류 발생 시 빈 데이터프레임 반환
+        return pd.DataFrame()
     
     # 중복 사용된 인텐트 필터링
     duplicate_intents = {name: count for name, count in intent_usage.items() if count > 1}
@@ -316,12 +534,13 @@ def check_intent_duplicates(data):
     # 결과 데이터프레임 생성
     duplicate_rows = []
     for intent_name, count in duplicate_intents.items():
-        locations = intent_locations[intent_name]
-        duplicate_rows.append({
-            'Intent명': intent_name,
-            '사용 횟수': count,
-            '사용 위치': ' | '.join(locations)
-        })
+        if intent_name in intent_locations:
+            locations = intent_locations[intent_name]
+            duplicate_rows.append({
+                'Intent명': intent_name,
+                '사용 횟수': count,
+                '사용 위치': ' | '.join(locations)
+            })
     
     return pd.DataFrame(duplicate_rows)
 
@@ -895,12 +1114,17 @@ if menu == "대시보드" and data is not None:
         
         # 인텐트 중복 사용 현황 추가
         st.markdown("**[인텐트 중복 사용 현황]**")
-        duplicate_intents_df = check_intent_duplicates(data)
-        if not duplicate_intents_df.empty:
-            st.warning(f"⚠️ 중복 사용된 인텐트가 {len(duplicate_intents_df)}개 있습니다!")
-            st.dataframe(duplicate_intents_df, use_container_width=True)
-        else:
-            st.success("✅ 중복 사용된 인텐트가 없습니다.")
+        try:
+            duplicate_intents_df = check_intent_duplicates(data)
+            if not duplicate_intents_df.empty:
+                st.warning(f"⚠️ 중복 사용된 인텐트가 {len(duplicate_intents_df)}개 있습니다!")
+                st.dataframe(duplicate_intents_df, use_container_width=True)
+            else:
+                st.success("✅ 중복 사용된 인텐트가 없습니다.")
+        except Exception as e:
+            st.error(f"인텐트 중복 검사 중 오류가 발생했습니다: {str(e)}")
+            st.info("데이터 구조를 확인해주세요.")
+            duplicate_intents_df = pd.DataFrame()
         
         st.markdown(f"**[Entity 요약 (총 {len(entity_df)}개)]**")
         if not entity_df.empty:
@@ -1321,3 +1545,4 @@ if menu == "Response Text 검출" and data is not None:
             file_name="response_typo_check.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
